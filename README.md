@@ -18,7 +18,7 @@ into one auditable, reproducible workflow.
   <img src="https://img.shields.io/badge/version-v0.1-orange" alt="v0.1">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="Platforms">
   <img src="https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20React-24C8DB" alt="Built with Tauri + React">
-  <img src="https://img.shields.io/badge/runtime-OpenCode-success" alt="OpenCode runtime">
+  <img src="https://img.shields.io/badge/runtime-Magi-success" alt="Magi runtime">
   <a href="http://makeapullrequest.com"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <a href="https://linux.do"><img src="https://img.shields.io/badge/Join-linux.do-orange" alt="linux.do"></a>
 </p>
@@ -112,10 +112,10 @@ your prompt
                                                flags · figure ↔ code consistency
 ```
 
-Everything runs through the bundled [OpenCode](https://opencode.ai) agent runtime
-(a single-binary sidecar, pinned and managed by the app). The UI never talks to a
-model directly — it goes through a thin SDK, so skills, MCP servers, and model
-providers stay pluggable.
+Everything runs through the bundled [Magi](https://github.com/EDLee01/magi) agent
+runtime (a Node process, pinned and managed by the app, running on an app-private
+port). The UI never talks to a model directly — it goes through a thin SDK
+(`MagiClient`), so skills, MCP servers, and model providers stay pluggable.
 
 ## 🧪 What's inside
 
@@ -128,7 +128,7 @@ providers stay pluggable.
 | **Native viewers** | Inline PDF, tables, images, HTML, and Office documents; matplotlib/plotly figures render publication-grade by default. |
 | **One design system** | A single validated chart palette shared by native UI and agent-generated matplotlib figures — correct in light and dark. |
 | **Keyboard-first** | A command palette (⌘K) reaches every primary action. |
-| **Model choice** | ~150 providers via OpenCode; BYOK, OpenAI/Anthropic-compatible endpoints, local Ollama, or the free built-in model. |
+| **Model choice** | BYOK via `config.yaml` model aliases (`main` / `fast` / `deep` / …) resolved to any configured provider — Anthropic, OpenAI-compatible, DeepSeek/SiliconFlow, Gemini, and other endpoints. |
 
 ## 🔌 Skills & connectors
 
@@ -158,14 +158,14 @@ providers stay pluggable.
 Build the desktop app from source:
 
 ```bash
-git clone https://github.com/EDLee01/geomind
-cd geomind
+git clone https://github.com/EDLee01/geomind-workspace
+cd geomind-workspace
 pnpm install
 
-# Fetch the pinned sidecars and bundled skills (kept out of git):
-bash scripts/dev/fetch-opencode.sh   # the OpenCode agent runtime
-bash scripts/dev/fetch-uv.sh         # uv, for isolated Python/Jupyter envs
-bash scripts/dev/fetch-skills.sh     # the ai4s-skills pack
+# Fetch the pinned runtime and bundled skills (kept out of git):
+bash scripts/dev/fetch-magi.sh    # the Magi agent runtime (Node + npm package)
+bash scripts/dev/fetch-uv.sh      # uv, for isolated Python/Jupyter envs
+bash scripts/dev/fetch-skills.sh  # the ai4s-skills pack
 
 # Develop, or build an installer (.dmg / .app / NSIS / .msi):
 pnpm --filter @ai4s/desktop tauri dev
@@ -214,11 +214,11 @@ pnpm lint        # ESLint
 | --- | --- |
 | `apps/desktop/` | Tauri 2 + React + TypeScript + Vite desktop shell (`src/` frontend, `src-tauri/` Rust) |
 | `packages/shared/` | Shared domain types and the chart design system |
-| `packages/sdk/` | `OpenCodeClient` SDK wrapper (isolates the UI from the runtime) |
+| `packages/sdk/` | `MagiClient` SDK wrapper (isolates the UI from the runtime) |
 | `packages/ui/` | Shared UI component library |
 | `runtime/skills/core/` | First-party scientific skills (`traceability-review`, `publication-figures`) |
 | `runtime/skills/external/` | The bundled `ai4s-skills` pack (fetched by script) |
-| `runtime/` | `manager`, `opencode-profile`, `mcp` configuration |
+| `runtime/` | `manager`, `mcp`, `kernel` configuration (plus a legacy `opencode-profile/` from the pre-Magi runtime) |
 | `docs/` | `PRD.md`, `TECHNICAL_DESIGN.md`, `REQUIREMENTS.md`, `CONNECT_YOUR_TOOLS.md` |
 | `examples/climate-trends/` | A built-in end-to-end demo project workspace |
 | `scripts/` | `release/` and `dev/` scripts (sidecar + skills fetchers) |
@@ -257,7 +257,7 @@ GeoMind is a fork of [Open Science](https://github.com/ai4s-research/open-scienc
 contributors, whose copyright is retained in [LICENSE](./LICENSE). This fork rebrands
 it as GeoMind and adapts the runtime.
 
-Built on [Tauri](https://tauri.app), [OpenCode](https://opencode.ai), and the
-[ai4s-skills](https://github.com/ai4s-research/ai4s-skills) pack. Thanks to
-[linux.do](https://linux.do) — a vibrant tech community where this project is shared
-and discussed.
+Built on [Tauri](https://tauri.app), the [Magi](https://github.com/EDLee01/magi)
+agent runtime, and the [ai4s-skills](https://github.com/ai4s-research/ai4s-skills)
+pack. Thanks to [linux.do](https://linux.do) — a vibrant tech community where this
+project is shared and discussed.

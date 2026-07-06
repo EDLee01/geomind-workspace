@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/version-v0.1-orange" alt="v0.1">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="Platforms">
   <img src="https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20React-24C8DB" alt="Built with Tauri + React">
-  <img src="https://img.shields.io/badge/runtime-OpenCode-success" alt="OpenCode runtime">
+  <img src="https://img.shields.io/badge/runtime-Magi-success" alt="Magi runtime">
   <a href="http://makeapullrequest.com"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <a href="https://linux.do"><img src="https://img.shields.io/badge/Join-linux.do-orange" alt="linux.do"></a>
 </p>
@@ -106,9 +106,9 @@
                                           图 ↔ 代码一致性
 ```
 
-一切都经由内置的 [OpenCode](https://opencode.ai) 智能体运行时（单文件 sidecar，由应用
-固定版本并管理）。UI 从不直接与模型对话——它通过一层轻量 SDK，因此技能、MCP 服务器与
-模型提供方都保持可插拔。
+一切都经由内置的 [Magi](https://github.com/EDLee01/magi) 智能体运行时（一个 Node 进程，
+由应用固定版本并管理，运行在应用私有端口上）。UI 从不直接与模型对话——它通过一层轻量 SDK
+（`MagiClient`），因此技能、MCP 服务器与模型提供方都保持可插拔。
 
 ## 🧪 核心能力
 
@@ -121,7 +121,7 @@
 | **原生查看器** | 内联渲染 PDF、表格、图片、HTML 与 Office 文档；matplotlib/plotly 图默认即出版级。 |
 | **统一设计系统** | 一套经校验的图表色板，原生 UI 与智能体生成的 matplotlib 图共用——明暗模式都正确。 |
 | **键盘优先** | 命令面板（⌘K）可达每一个主操作。 |
-| **模型选择** | 经 OpenCode 支持约 150 家提供方；自带密钥、OpenAI/Anthropic 兼容端点、本地 Ollama，或内置免费模型。 |
+| **模型选择** | 通过 `config.yaml` 的模型别名（`main` / `fast` / `deep` / …）自带密钥，解析到任意已配置的提供方——Anthropic、OpenAI 兼容端点、DeepSeek/硅基流动、Gemini 等。 |
 
 ## 🔌 技能与连接器
 
@@ -151,12 +151,12 @@
 从源码构建桌面应用：
 
 ```bash
-git clone https://github.com/EDLee01/geomind
-cd geomind
+git clone https://github.com/EDLee01/geomind-workspace
+cd geomind-workspace
 pnpm install
 
-# 拉取固定版本的 sidecar 与内置技能（不纳入 git）：
-bash scripts/dev/fetch-opencode.sh   # OpenCode 智能体运行时
+# 拉取固定版本的运行时与内置技能（不纳入 git）：
+bash scripts/dev/fetch-magi.sh    # Magi 智能体运行时（Node + npm 包）
 bash scripts/dev/fetch-uv.sh         # uv，用于隔离的 Python/Jupyter 环境
 bash scripts/dev/fetch-skills.sh     # ai4s-skills 技能包
 
@@ -202,11 +202,11 @@ pnpm lint        # ESLint
 | --- | --- |
 | `apps/desktop/` | Tauri 2 + React + TypeScript + Vite 桌面外壳（`src/` 前端，`src-tauri/` Rust） |
 | `packages/shared/` | 共享领域类型与图表设计系统 |
-| `packages/sdk/` | `OpenCodeClient` SDK 封装（将 UI 与运行时隔离） |
+| `packages/sdk/` | `MagiClient` SDK 封装（将 UI 与运行时隔离） |
 | `packages/ui/` | 共享 UI 组件库 |
 | `runtime/skills/core/` | 第一方科学技能（`traceability-review`、`publication-figures`） |
 | `runtime/skills/external/` | 内置的 `ai4s-skills` 技能包（脚本拉取） |
-| `runtime/` | `manager`、`opencode-profile`、`mcp` 配置 |
+| `runtime/` | `manager`、`mcp`、`kernel` 配置（外加一个来自迁移前运行时的遗留 `opencode-profile/`） |
 | `docs/` | `PRD.md`、`TECHNICAL_DESIGN.md`、`REQUIREMENTS.md`、`CONNECT_YOUR_TOOLS.md` |
 | `examples/climate-trends/` | 内置的端到端示例项目工作区 |
 | `scripts/` | `release/` 与 `dev/` 脚本（sidecar 与技能拉取器） |
@@ -240,6 +240,6 @@ GeoMind 是 [Open Science](https://github.com/ai4s-research/open-science)（MIT 
 一个分叉——原始工作台的设计与代码由 AI4S Workbench contributors 完成，其版权保留在
 [LICENSE](./LICENSE) 中。本分叉将其重新命名为 GeoMind 并适配了运行时。
 
-基于 [Tauri](https://tauri.app)、[OpenCode](https://opencode.ai) 与
+基于 [Tauri](https://tauri.app)、[Magi](https://github.com/EDLee01/magi) 智能体运行时与
 [ai4s-skills](https://github.com/ai4s-research/ai4s-skills) 技能包构建。感谢
 [linux.do](https://linux.do) —— 一个充满活力的技术社区，本项目在此分享与讨论。
