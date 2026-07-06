@@ -1,8 +1,8 @@
 <div align="center">
 
-[![Open Science — 面向科研人员的开源 AI 工作台](./docs/assets/banner.webp)](https://github.com/ai4s-research/open-science)
+<img src="./docs/assets/geomind-logo.png" width="300" alt="GeoMind — 面向科研人员的开源 AI 工作台" />
 
-# Open Science
+# GeoMind
 
 **面向科研人员的开源 AI 工作台。** 你做严谨科研的研究伙伴。
 
@@ -151,8 +151,8 @@
 从源码构建桌面应用：
 
 ```bash
-git clone https://github.com/ai4s-research/open-science
-cd open-science
+git clone https://github.com/EDLee01/geomind
+cd geomind
 pnpm install
 
 # 拉取固定版本的 sidecar 与内置技能（不纳入 git）：
@@ -235,6 +235,10 @@ pnpm lint        # ESLint
 > 前交由领域专家评审。
 
 ## 🙏 致谢
+
+GeoMind 是 [Open Science](https://github.com/ai4s-research/open-science)（MIT 许可）的
+一个分叉——原始工作台的设计与代码由 AI4S Workbench contributors 完成，其版权保留在
+[LICENSE](./LICENSE) 中。本分叉将其重新命名为 GeoMind 并适配了运行时。
 
 基于 [Tauri](https://tauri.app)、[OpenCode](https://opencode.ai) 与
 [ai4s-skills](https://github.com/ai4s-research/ai4s-skills) 技能包构建。感谢

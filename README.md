@@ -1,8 +1,8 @@
 <div align="center">
 
-[![Open Science — An open AI workbench for scientists](./docs/assets/banner.webp)](https://github.com/ai4s-research/open-science)
+<img src="./docs/assets/geomind-logo.png" width="300" alt="GeoMind — An open AI workbench for scientists" />
 
-# Open Science
+# GeoMind
 
 **An open AI workbench for scientists.** Your research partner for rigorous science.
 
@@ -158,8 +158,8 @@ providers stay pluggable.
 Build the desktop app from source:
 
 ```bash
-git clone https://github.com/ai4s-research/open-science
-cd open-science
+git clone https://github.com/EDLee01/geomind
+cd geomind
 pnpm install
 
 # Fetch the pinned sidecars and bundled skills (kept out of git):
@@ -251,6 +251,11 @@ licenses.
 > claims, and have a domain expert review before any submission or decision.
 
 ## 🙏 Acknowledgments
+
+GeoMind is a fork of [Open Science](https://github.com/ai4s-research/open-science)
+(MIT-licensed) — the original workbench design and code are by the AI4S Workbench
+contributors, whose copyright is retained in [LICENSE](./LICENSE). This fork rebrands
+it as GeoMind and adapts the runtime.
 
 Built on [Tauri](https://tauri.app), [OpenCode](https://opencode.ai), and the
 [ai4s-skills](https://github.com/ai4s-research/ai4s-skills) pack. Thanks to
