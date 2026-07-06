@@ -2,19 +2,22 @@ import type { RuntimeStatus, ToolCallStatus } from "@ai4s/shared";
 
 export type { RuntimeStatus, ToolCallStatus };
 
-/** Pinned OpenCode release this client targets. */
-export const OPENCODE_VERSION = "1.17.13";
+/** Magi release this client targets (github.com/EDLee01/magi). */
+export const MAGI_VERSION = "0.1.13";
 
-/** OpenCode server defaults (`opencode serve`). */
-export const DEFAULT_OPENCODE_URL = "http://127.0.0.1:4096";
+/** Magi control server default (`magi serve`). */
+export const DEFAULT_MAGI_URL = "http://127.0.0.1:8765";
 
-// ---- Normalized events (OpenCode SSE → app) ----
-// OpenCode emits idempotent "updated" events (full current value), not deltas, so
+// ---- Normalized events (Magi audit SSE → app) ----
+// Magi streams an append-only AUDIT log over `GET /events` (SSE, `event: audit`
+// frames). The client folds those records into the idempotent events below:
 // text/tool events carry a stable id and the app upserts by that id.
 
 export interface TextUpdatedEvent {
   type: "text.updated";
   sessionId: string;
+  /** Synthetic segment id (`<jobId>#<n>`) — a new segment starts after each
+   *  tool call, so text and tool blocks interleave in order. */
   partId: string;
   text: string;
 }
@@ -25,12 +28,13 @@ export interface ToolUpdatedEvent {
   tool: string;
   status: ToolCallStatus;
   title?: string;
-  /** Tool arguments (e.g. a write tool's `filePath` + `content`). */
+  /** Tool arguments (from `agent.tool.use` metadata.input). */
   input?: Record<string, unknown>;
-  /** Tool result text, when the tool returned one. */
+  /** Tool result text. Magi only carries it on FAILURE (the error reason);
+   *  successful outputs land in session history, not the audit stream. */
   output?: string;
-  /** A `task` tool's spawned subagent session — that session's interactive
-   *  requests (question/permission) belong to THIS conversation. */
+  /** Reserved: Magi does not announce subagent sessions on the parent's
+   *  stream, so this is currently never set. */
   childSessionId?: string;
 }
 export interface SessionIdleEvent {
@@ -39,8 +43,10 @@ export interface SessionIdleEvent {
 }
 
 // ---- Interactive requests (the agent asks; the user must answer) ----
-// OpenCode blocks the run until answered. Two kinds: a `question` (pick from
-// options) and a `permission` (approve a command / file write / etc.).
+// Magi blocks the running job until answered (default timeout 300 s; the
+// desktop shell raises it via MAGI_INTERACTION_TIMEOUT_MS at spawn). Two
+// kinds: a `question` (AskUserQuestion) and a `permission` (tool approval).
+// The requestId encodes the reply route: `<jobId>:<toolUseId>`.
 
 export interface QuestionOption {
   label: string;
@@ -50,7 +56,7 @@ export interface QuestionItem {
   question: string;
   header: string;
   options: QuestionOption[];
-  /** Allow selecting more than one option. */
+  /** Allow selecting more than one option (Magi: `multiSelect`). */
   multiple?: boolean;
   /** Allow a free-text answer in addition to the options. */
   custom?: boolean;
@@ -61,7 +67,7 @@ export interface QuestionAskedEvent {
   requestId: string;
   questions: QuestionItem[];
 }
-/** A question was answered or rejected elsewhere — clear it from the UI. */
+/** A question was answered/rejected/timed out elsewhere — clear it from the UI. */
 export interface QuestionResolvedEvent {
   type: "question.resolved";
   sessionId: string;
@@ -72,9 +78,10 @@ export interface PermissionAskedEvent {
   type: "permission.asked";
   sessionId: string;
   requestId: string;
-  /** e.g. "bash", "write", "edit" — what the agent wants to do. */
+  /** The tool asking for approval, e.g. "Bash", "Write". */
   action: string;
-  /** The concrete targets (a command line, file paths). */
+  /** Concrete targets pulled from the tool input (command line, file paths),
+   *  plus Magi's human-readable reason when present. */
   resources: string[];
 }
 export interface PermissionResolvedEvent {
@@ -88,7 +95,7 @@ export interface RuntimeErrorEvent {
   message: string;
 }
 
-export type OpenCodeEvent =
+export type RuntimeEvent =
   | TextUpdatedEvent
   | ToolUpdatedEvent
   | SessionIdleEvent
@@ -98,19 +105,19 @@ export type OpenCodeEvent =
   | PermissionAskedEvent
   | PermissionResolvedEvent;
 
-/** Approve a permission once, always (persist a rule), or reject it. */
-export type PermissionReply = "once" | "always" | "reject";
+/** Approve a permission once, or reject it. Magi approvals are one-shot
+ *  booleans — there is no server-side "always allow" rule store. */
+export type PermissionReply = "once" | "reject";
 
 // ---- REST shapes the app consumes ----
 
 export interface SessionMeta {
   id: string;
   title: string;
-  slug?: string;
-  /** Workspace folder this session operates in (absolute path). */
+  /** Workspace folder this session operates in (absolute path; Magi `cwd`). */
   directory?: string;
-  /** Set on subagent sessions: the session whose task tool spawned this one. */
-  parentId?: string;
+  /** Message count from the session summary. */
+  messageCount?: number;
 }
 
 export interface SkillInfo {
@@ -119,137 +126,123 @@ export interface SkillInfo {
   location?: string;
 }
 
-export interface AgentInfo {
-  name: string;
-  description: string;
-  mode?: string;
-}
-
-/** A slash command the runtime can run. GET /command merges every source:
- *  config commands, skills, and MCP prompts — one list for the composer's
- *  "/" palette. */
-export interface CommandInfo {
-  name: string;
-  description?: string;
-  /** Where it came from, e.g. "command" | "skill" | "mcp". */
-  source?: string;
-  /** Agent the command pins, when it does. */
-  agent?: string;
-  /** The prompt text the command expands to. OpenCode stores that EXPANSION
-   *  as the user message in history — the template lets the app reverse-map
-   *  it back to the "/name" the user actually typed. */
-  template?: string;
-}
-
-/** A message loaded from history (GET /session/:id/message). */
+/** A message loaded from history (GET /sessions/:id → messages[]).
+ *  Magi stores flat role/content rows; the client folds `tool` rows into the
+ *  surrounding assistant message as tool parts. */
 export interface HistoryMessage {
   role: "user" | "assistant";
   parts: HistoryPart[];
 }
 export interface HistoryPart {
-  type: string;
+  type: "text" | "tool";
   text?: string;
-  /** True on runtime-generated text (e.g. the "tool was executed by the user"
-   *  marker a "!" shell run leaves in history) — not something the user typed. */
-  synthetic?: boolean;
   tool?: string;
   state?: {
-    status?: string;
-    title?: string;
-    input?: Record<string, unknown>;
+    status?: "completed" | "error";
     output?: string;
   };
 }
 
-export interface OpenCodeClientOptions {
-  /** Base URL of a running `opencode serve`, e.g. http://127.0.0.1:4096 */
-  baseUrl?: string;
-  /** Optional OPENCODE_SERVER_PASSWORD (basic auth). */
-  password?: string;
-  username?: string;
-  /** Inject fetch (defaults to global fetch; browser + node both have it). */
-  fetchImpl?: typeof fetch;
-  /**
-   * Workspace directory the server should scope skill discovery to. OpenCode
-   * initializes per-directory instances lazily; without this, /api/skill can
-   * return an empty list until something else touches the workspace instance.
-   */
-  directory?: string;
-}
+// ---- Model / provider configuration (Magi-native) ----
+// Magi's currency is model ALIASES (`main`, `fast`, `deep`, `auto`) resolved
+// server-side from config.yaml. The client sends the chosen alias with every
+// job; there is no server-held "default model" to write.
 
-// ---- Provider / model configuration (OpenCode-native, one source of truth) ----
-
-export interface ProviderModelInfo {
-  id: string;
+export interface MagiProviderInfo {
   name: string;
-}
-
-/** A provider OpenCode can use right now (auth present or public). */
-export interface ProviderInfo {
-  id: string;
-  name: string;
-  models: ProviderModelInfo[];
-}
-
-/** Extra input an auth method needs before starting (e.g. Copilot deployment). */
-export interface AuthPrompt {
-  type: "select" | "text";
-  key: string;
-  message: string;
-  options?: Array<{ label: string; value: string; hint?: string }>;
-}
-
-export interface ProviderAuthMethod {
-  type: "oauth" | "api";
-  label: string;
-  prompts?: AuthPrompt[];
-}
-
-/** Catalog entry: a provider OpenCode knows how to talk to (not necessarily connected). */
-export interface ProviderCatalogEntry {
-  id: string;
-  name: string;
-  /** Env var(s) that would carry the API key, e.g. ["ANTHROPIC_API_KEY"]. */
-  env: string[];
-}
-
-export interface OAuthAuthorization {
-  url: string;
-  /** "auto" — callback completes on its own; "code" — the user pastes a code. */
-  method: "auto" | "code";
-  instructions: string;
-}
-
-// ---- MCP servers ----
-
-export type McpConfig =
-  | { type: "local"; command: string[]; enabled?: boolean; environment?: Record<string, string> }
-  | { type: "remote"; url: string; enabled?: boolean; headers?: Record<string, string> };
-
-export interface McpServer {
-  name: string;
-  /** e.g. "connected" | "failed" | "disabled" | "pending" */
-  status: string;
-  config?: McpConfig;
-}
-
-// ---- Raw OpenCode wire shapes (subset we consume) ----
-
-export interface OpenCodeRawEvent {
   type: string;
-  properties?: Record<string, unknown>;
+  defaultModel: string;
+  /** False when the provider's API-key env var is not set on the daemon. */
+  configured: boolean;
 }
 
-export interface OpenCodeTextPart {
-  id: string;
-  type: "text";
-  text: string;
+export interface MagiProvidersResponse {
+  providers: MagiProviderInfo[];
+  /** alias → "provider/model" (or bare model) as configured in config.yaml. */
+  aliases: Record<string, string>;
 }
-export interface OpenCodeToolPart {
-  id: string;
-  type: "tool";
-  callID: string;
-  tool: string;
-  state: { status: "pending" | "running" | "completed" | "error"; title?: string };
+
+export interface MagiClientOptions {
+  /** Base URL of a running `magi serve`, e.g. http://127.0.0.1:8765 */
+  baseUrl?: string;
+  /** Pre-paired device credentials (the desktop shell reads the daemon's
+   *  self-minted pair from control-credentials.json). When absent the client
+   *  auto-pairs via POST /pairing — loopback only. */
+  deviceId?: string;
+  token?: string;
+  /** Device name used when auto-pairing. */
+  deviceName?: string;
+  /** Inject fetch (defaults to global fetch). */
+  fetchImpl?: typeof fetch;
+  /** Workspace directory new sessions are created in (Magi session cwd). */
+  directory?: string;
+  /** Model alias sent with every job. Default "main". */
+  model?: string;
+  /** Session ids the user deleted locally (Magi has no delete route yet);
+   *  the client filters them out of listSessions and adds to it. */
+  deletedSessionIds?: string[];
 }
-export type OpenCodePart = OpenCodeTextPart | OpenCodeToolPart | { type: string };
+
+export interface MagiCredentials {
+  deviceId: string;
+  token: string;
+}
+
+// ---- Raw Magi wire shapes (subset we consume) ----
+
+/** One audit record as served by GET /events (Magi's `MagiEventView`). */
+export interface MagiAuditEvent {
+  id: number;
+  sessionId: string;
+  jobId?: string;
+  action: string;
+  status?: string;
+  target?: string;
+  createdAt?: string;
+  message?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MagiSessionSummary {
+  id: string;
+  title: string | null;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface MagiMessageRecord {
+  id: number;
+  sessionId: string;
+  role: string;
+  content: string;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface MagiJobRecord {
+  id: string;
+  sessionId: string;
+  kind: string;
+  status: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MagiInteraction {
+  jobId: string;
+  sessionId: string;
+  toolUseId: string;
+  kind: "approval" | "question";
+  status: "pending" | "resolved" | "timeout" | "cancelled";
+  toolUse?: { id: string; name: string; input?: Record<string, unknown> };
+  reason?: string;
+  question?: {
+    questions: Array<{
+      question: string;
+      header?: string;
+      options: Array<{ label: string; description?: string }>;
+      multiSelect?: boolean;
+    }>;
+  };
+}
