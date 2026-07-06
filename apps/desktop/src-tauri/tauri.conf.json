@@ -28,11 +28,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/magi", "binaries/uv"],
+    "externalBin": ["binaries/uv"],
     "resources": {
       "../../../runtime/skills/external/ai4s-skills": "skills/",
       "../../../runtime/skills/core": "skills-core/",
-      "../../../examples/climate-trends": "examples/climate-trends/"
+      "../../../examples/climate-trends": "examples/climate-trends/",
+      "resources/magi": "magi/"
     },
     "icon": [
       "icons/32x32.png",

@@ -204,7 +204,7 @@ fn spawn_kernel(app: &AppHandle, lang: &str, cwd: &std::path::Path, key: &str) -
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    // Give the kernel the SAME PATH as the OpenCode sidecar so it runs the
+    // Give the kernel the SAME PATH as the Magi runtime so it runs the
     // user's scientific Python (anaconda/homebrew) — the one the agent uses,
     // with numpy/matplotlib/etc. A Finder-launched app otherwise has a minimal
     // PATH and `python3` resolves to a bare system Python (no matplotlib).

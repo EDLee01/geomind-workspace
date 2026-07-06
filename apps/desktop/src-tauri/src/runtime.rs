@@ -50,7 +50,7 @@ fn base_workspace_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(runtime_root(app)?.join("base-workspace.txt"))
 }
 
-/// The active workspace folder OpenCode / the kernel / previews / provenance all
+/// The active workspace folder Magi / the kernel / previews / provenance all
 /// operate in. Defaults to the base folder (`~/Documents/OpenScience`) until the
 /// user opens or creates another one; the choice persists across restarts.
 pub fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -229,11 +229,25 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
     // `magi serve` daemonizes when MAGI_DAEMON=1 (it self-mints a long-lived
     // pairing token into $MAGI_CONFIG_DIR/state/daemon/control-credentials.json);
     // MagiClient also pairs itself over loopback, so either path authenticates.
+    //
+    // Magi ships as a bundle RESOURCE (a pinned Node runtime + the npm package
+    // tree, see scripts/dev/fetch-magi.sh) rather than a single-file sidecar,
+    // because it needs Node and a native better-sqlite3 addon. So we spawn
+    // `node <pkg>/dist/cli.js serve` directly instead of `.sidecar("magi")`.
+    let magi_root = app
+        .path()
+        .resolve("magi", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("magi resource not found: {e}"))?;
+    let node_bin = magi_root.join(if cfg!(windows) {
+        "node/node.exe"
+    } else {
+        "node/node"
+    });
+    let cli_js = magi_root.join("pkg/node_modules/@edwardlee5423/magi/dist/cli.js");
     let cmd = app
         .shell()
-        .sidecar("magi")
-        .map_err(|e| format!("sidecar not found: {e}"))?
-        .args(["serve"])
+        .command(node_bin)
+        .args([cli_js.to_string_lossy().to_string(), "serve".to_string()])
         // App-private state root: the daemon never touches the user's ~/.magi-next.
         .env("MAGI_CONFIG_DIR", cfg.to_string_lossy().to_string())
         .env("MAGI_CONTROL_BIND", "127.0.0.1")
@@ -256,7 +270,7 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
     Ok(child)
 }
 
-/// Start the bundled OpenCode (idempotent). Returns its base URL.
+/// Start the bundled Magi runtime (idempotent). Returns its base URL.
 #[tauri::command]
 pub fn start_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<String, String> {
     if let Some(url) = state.url.lock().unwrap().clone() {
@@ -275,7 +289,7 @@ pub fn start_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<S
 }
 
 /// The workspace directory the sidecar runs in — the frontend passes it to the
-/// SDK so skill discovery is scoped to the right OpenCode instance.
+/// SDK so skill discovery is scoped to the right Magi instance.
 #[tauri::command]
 pub fn workspace_path(app: AppHandle) -> Result<String, String> {
     Ok(workspace_dir(&app)?.to_string_lossy().to_string())
@@ -332,7 +346,7 @@ pub fn set_workspace(
     std::fs::write(active_workspace_file(&app)?, canon.to_string_lossy().as_bytes())
         .map_err(|e| e.to_string())?;
 
-    // No sidecar restart: OpenCode serves every folder from one process via
+    // No sidecar restart: Magi serves every folder from one process via
     // per-directory instances, and the frontend reconnects its event stream
     // with `?directory=<new folder>`. Restarting here used to cost 3-6 s per
     // history-session switch (process boot + reconnect polling).
@@ -368,7 +382,7 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-/// Kill the bundled OpenCode if running.
+/// Kill the bundled Magi runtime if running.
 #[tauri::command]
 pub fn stop_runtime(state: State<'_, RuntimeState>) {
     if let Some(child) = state.child.lock().unwrap().take() {

@@ -52,5 +52,8 @@ secrets/
 # Bundled sidecar binaries (fetched per-platform; too large for git)
 apps/desktop/src-tauri/binaries/
 
+# Bundled Magi runtime resource (node + npm tree; fetched per-platform)
+apps/desktop/src-tauri/resources/magi/
+
 # Third-party skill packs (fetched by scripts/dev/fetch-skills.sh)
 runtime/skills/external/

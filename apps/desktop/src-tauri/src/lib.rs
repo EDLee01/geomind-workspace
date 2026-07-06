@@ -1,5 +1,5 @@
 // AI4S Workbench — Tauri 2 entry. Hosts the React frontend and supervises the
-// bundled OpenCode sidecar (isolated config/data + dedicated port; killed on exit).
+// bundled Magi runtime (isolated config/data + dedicated port; killed on exit).
 mod artifact_file;
 mod debug_log;
 mod examples;
@@ -26,7 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         // Single instance MUST be the first plugin. A second launch (or a reinstall
         // while the app is still running) focuses the existing window instead of
-        // starting a second OpenCode on the same data dir (which deadlocks the DB).
+        // starting a second Magi on the same data dir (which deadlocks the DB).
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -90,7 +90,7 @@ pub fn run() {
         .run(|app, event| {
             // Clean up on exit. macOS Cmd+Q / Quit terminates via RunEvent::Exit
             // (ExitRequested is not always delivered), so handle BOTH — otherwise
-            // the OpenCode sidecar / kernel / Jupyter orphan on every quit. The
+            // the Magi runtime / kernel / Jupyter orphan on every quit. The
             // cleanup is idempotent, so running on both is safe.
             if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 runtime::kill_child(&app.state::<RuntimeState>());
