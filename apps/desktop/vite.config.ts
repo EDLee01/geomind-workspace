@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 export default defineConfig({
+  // Desktop build serves from "/"; the hosted web build sets GEOMIND_WEB_BASE
+  // (e.g. "/gm/") so nginx can mount it under a path. Env-gated so the Tauri
+  // build is unaffected.
+  base: process.env.GEOMIND_WEB_BASE || "/",
   plugins: [react()],
   resolve: {
     alias: {

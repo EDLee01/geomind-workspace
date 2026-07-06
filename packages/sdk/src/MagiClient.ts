@@ -51,6 +51,9 @@ export class MagiClient {
   private readonly directory: string | null;
   private readonly deviceName: string;
   private creds: MagiCredentials | null;
+  /** When true, a reverse proxy authenticates to the daemon; this client sends
+   *  no Authorization header and never pairs. */
+  private readonly proxyAuth: boolean;
   private model: string;
   private status: RuntimeStatus = "offline";
   private abort: AbortController | null = null;
@@ -72,6 +75,7 @@ export class MagiClient {
     this.directory = opts.directory ?? null;
     this.deviceName = opts.deviceName ?? "geomind-desktop";
     this.creds = opts.deviceId && opts.token ? { deviceId: opts.deviceId, token: opts.token } : null;
+    this.proxyAuth = opts.proxyAuth ?? false;
     this.model = opts.model ?? "main";
     this.deletedSessions = new Set(opts.deletedSessionIds ?? []);
   }
@@ -111,8 +115,10 @@ export class MagiClient {
 
   // ---- auth ----
 
-  /** Mint a device token via POST /pairing. Loopback-only on the Magi side. */
+  /** Mint a device token via POST /pairing. Loopback-only on the Magi side.
+   *  No-op in proxyAuth mode — the reverse proxy handles daemon auth. */
   private async pair(): Promise<void> {
+    if (this.proxyAuth) return;
     const res = await this.fetchImpl(`${this.baseUrl}/pairing`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -127,7 +133,9 @@ export class MagiClient {
   private headers(json = false): Record<string, string> {
     const h: Record<string, string> = {};
     if (json) h["Content-Type"] = "application/json";
-    if (this.creds) {
+    // In proxyAuth mode the Authorization header is left untouched so the
+    // reverse proxy's own auth (e.g. browser HTTP basic auth) rides on it.
+    if (!this.proxyAuth && this.creds) {
       h["X-Magi-Device-Id"] = this.creds.deviceId;
       h["Authorization"] = `Bearer ${this.creds.token}`;
     }
@@ -135,16 +143,17 @@ export class MagiClient {
   }
 
   /** Authenticated fetch. Pairs on first use and re-pairs once on 401 —
-   *  control-API-minted tokens expire (Magi default TTL is short). */
+   *  control-API-minted tokens expire (Magi default TTL is short). In
+   *  proxyAuth mode there is nothing to pair and a 401 comes from the proxy. */
   private async fetchAuthed(path: string, init: RequestInit = {}): Promise<Response> {
-    if (!this.creds) await this.pair();
+    if (!this.proxyAuth && !this.creds) await this.pair();
     const doFetch = () =>
       this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
         headers: { ...this.headers(init.body !== undefined), ...(init.headers ?? {}) },
       });
     let res = await doFetch();
-    if (res.status === 401) {
+    if (res.status === 401 && !this.proxyAuth) {
       await this.pair();
       res = await doFetch();
     }

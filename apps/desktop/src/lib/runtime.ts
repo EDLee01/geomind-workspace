@@ -33,8 +33,12 @@ const URL_KEY = "ai4s.magiUrl";
 const HIDDEN_KEY = "ai4s.hiddenExamples";
 
 function initialUrl(): string {
-  if (typeof window === "undefined") return DEFAULT_MAGI_URL;
-  return window.localStorage.getItem(URL_KEY) ?? DEFAULT_MAGI_URL;
+  // The hosted web build bakes in VITE_MAGI_URL (a same-origin path like
+  // "/gm/api" that nginx proxies to the server's magi daemon). Unset in the
+  // desktop build, so it falls back to a saved choice or the loopback default.
+  const baked = import.meta.env?.VITE_MAGI_URL as string | undefined;
+  if (typeof window === "undefined") return baked || DEFAULT_MAGI_URL;
+  return window.localStorage.getItem(URL_KEY) ?? baked ?? DEFAULT_MAGI_URL;
 }
 function initialHidden(): string[] {
   if (typeof window === "undefined") return [];
@@ -445,6 +449,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       baseUrl: get().serverUrl,
       directory: directory ?? undefined,
       model: get().model,
+      // Hosted web build behind nginx: the proxy authenticates to the daemon
+      // and gates access (basic auth), so the client sends no auth header.
+      proxyAuth: import.meta.env?.VITE_MAGI_PROXY_AUTH === "1",
     });
     client = c;
     c.onStatus((status) => {
@@ -582,7 +589,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   bootstrap: async () => {
     void get().detectTools();
-    if (!isTauri) return;
+    if (!isTauri) {
+      // Hosted web build (VITE_MAGI_URL baked in): the daemon runs on the
+      // server behind nginx, so there is nothing to spawn — just connect to
+      // the same-origin proxy path. Plain browser dev (no baked URL) stays
+      // idle until the user connects from Settings.
+      if (import.meta.env?.VITE_MAGI_URL) await get().connectRetry();
+      return;
+    }
     void logDebug("bootstrap: starting bundled runtime");
     try {
       const url = await startRuntime();

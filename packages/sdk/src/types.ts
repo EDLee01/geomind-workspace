@@ -186,6 +186,11 @@ export interface MagiClientOptions {
   directory?: string;
   /** Model alias sent with every job. Default "main". */
   model?: string;
+  /** Hosted-behind-a-reverse-proxy mode: the proxy authenticates to the daemon
+   *  (injects the device token) and gates access itself (e.g. HTTP basic auth).
+   *  The client then sends NO `Authorization` header — leaving it free for the
+   *  proxy's own auth scheme — and skips pairing entirely. */
+  proxyAuth?: boolean;
   /** Session ids the user deleted locally (Magi has no delete route yet);
    *  the client filters them out of listSessions and adds to it. */
   deletedSessionIds?: string[];
