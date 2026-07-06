@@ -1,4 +1,4 @@
-export { MagiClient } from "./MagiClient";
+export { MagiClient, stripToolUseJson } from "./MagiClient";
 export {
   MAGI_VERSION,
   DEFAULT_MAGI_URL,

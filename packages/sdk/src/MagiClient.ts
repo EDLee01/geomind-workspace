@@ -259,6 +259,11 @@ export class MagiClient {
     const jobId = ev.jobId ?? "";
     switch (ev.action) {
       case "agent.text.delta": {
+        // Streamed deltas carry only real prose — verified against live audit
+        // streams: tool calls arrive as separate agent.tool.use events, never
+        // inside a delta. The tool_use duplication this SDK strips appears ONLY
+        // in the non-streamed assistant.message fallback below, so this hot
+        // path stays untouched.
         if (!jobId || typeof meta.text !== "string" || meta.text.length === 0) return;
         const seg = this.segment(jobId, sessionId);
         seg.text += meta.text;
@@ -273,17 +278,25 @@ export class MagiClient {
       }
       case "agent.assistant.message": {
         // Streamed turns already showed this text via deltas. Non-streamed
-        // turns (or providers without SSE) surface it here instead.
+        // turns (hotaitool omits SSE for some Sonnet turns) surface it here.
+        // Magi's messageText() serializes each tool-use content part as
+        // JSON.stringify({id,name,input}) (providers/ir.ts), so a tool-only
+        // turn's fallback text is pure tool_use JSON — already rendered as a
+        // clean card from agent.tool.use. Strip those blocks, keeping only any
+        // real prose preface, so the thread never shows raw {"id":"toolu_…"}.
         if (!jobId) return;
         const seg = this.segment(jobId, sessionId);
         if (!seg.deltaSeen && typeof meta.text === "string" && meta.text.trim()) {
-          seg.text += meta.text;
-          this.emit({
-            type: "text.updated",
-            sessionId,
-            partId: `${jobId}#${seg.seq}`,
-            text: seg.text,
-          });
+          const prose = stripToolUseJson(meta.text);
+          if (prose.trim()) {
+            seg.text += prose;
+            this.emit({
+              type: "text.updated",
+              sessionId,
+              partId: `${jobId}#${seg.seq}`,
+              text: seg.text,
+            });
+          }
         }
         // A message boundary: whatever text follows belongs to a new part.
         this.rollSegment(jobId, sessionId);
@@ -646,6 +659,92 @@ export class MagiClient {
 }
 
 // ---- helpers ----
+
+/**
+ * Remove Magi's serialized tool-use blocks from an assistant.message fallback
+ * text, leaving only real prose.
+ *
+ * Magi's messageText() (providers/ir.ts) renders every tool-use content part as
+ * `JSON.stringify({ id, name, input })` and concatenates it with any text parts.
+ * When a turn has no streamed delta (hotaitool skips SSE for some Sonnet turns),
+ * the SDK falls back to this text — so a tool-only turn would otherwise surface
+ * as raw `{"id":"toolu_…","name":"…","input":{…}}`. The real tool call is already
+ * rendered from the agent.tool.use event, so this JSON is pure duplication.
+ *
+ * A regex can't do this safely: a tool input can contain braces, quotes and
+ * escaped newlines (e.g. a FileWrite whose content is source code), so `\{.*?\}`
+ * mis-slices. Instead we scan for the exact marker `{"id":"toolu_`, walk to the
+ * matching close brace with a quote/escape-aware counter, and drop the span only
+ * if it JSON-parses into a {id, name, input} object. Anything else is preserved
+ * verbatim.
+ */
+export function stripToolUseJson(text: string): string {
+  const MARKER = '{"id":"toolu_';
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const start = text.indexOf(MARKER, i);
+    if (start === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, start);
+    const end = scanBalancedObject(text, start);
+    if (end === -1) {
+      // No well-formed object here — keep the rest as-is and stop.
+      out += text.slice(start);
+      break;
+    }
+    const span = text.slice(start, end);
+    if (isToolUseObject(span)) {
+      i = end; // drop the tool-use JSON
+    } else {
+      out += text[start]; // false positive — keep one char and rescan
+      i = start + 1;
+    }
+  }
+  return out;
+}
+
+/** Index just past the object starting at `start`, honoring strings/escapes;
+ *  -1 if the braces never balance. */
+function scanBalancedObject(text: string, start: number): number {
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** True when `span` parses to an Anthropic tool-use object {id, name, input}. */
+function isToolUseObject(span: string): boolean {
+  try {
+    const o = JSON.parse(span) as unknown;
+    return (
+      isRecord(o) &&
+      typeof o.id === "string" &&
+      o.id.startsWith("toolu_") &&
+      typeof o.name === "string" &&
+      "input" in o
+    );
+  } catch {
+    return false;
+  }
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
