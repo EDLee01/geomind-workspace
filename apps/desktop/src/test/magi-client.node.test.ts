@@ -152,12 +152,15 @@ describe("MagiClient ↔ Magi Control API", () => {
     expect(providers.providers[0].name).toBe("siliconflow");
   });
 
-  it("hides a deleted session locally", async () => {
+  it("deletes a session via the real route and hides it locally", async () => {
     const client = newClient();
     await client.connect();
     const keep = await client.createSession("keep");
     const drop = await client.createSession("drop");
     await client.deleteSession(drop);
+    // Server-side: the session is actually gone (getMessages 404s).
+    await expect(client.getMessages(drop)).rejects.toThrow(/404/);
+    // Client-side: filtered out of the list and persisted as hidden.
     const listed = await client.listSessions();
     const ids = listed.map((s) => s.id);
     expect(ids).toContain(keep);

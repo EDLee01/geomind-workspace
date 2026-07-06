@@ -144,6 +144,13 @@ export function startMockMagi(port = 0): Promise<MockMagi> {
       if (!s) return json(res, 404, { error: "session not found" });
       return json(res, 200, { session: { ...s, messages: (messages.get(id) ?? []).map((m, i) => ({ id: i, sessionId: id, role: m.role, content: m.content, createdAt: "t", metadata: m.metadata ?? {} })) } });
     }
+    if (method === "DELETE" && sm) {
+      const id = decodeURIComponent(sm[1]);
+      if (!sessions.has(id)) return json(res, 404, { error: "session not found" });
+      sessions.delete(id);
+      messages.delete(id);
+      return json(res, 200, { ok: true, deleted: id });
+    }
     if (method === "POST" && url === "/jobs") {
       const body = await readBody(req);
       const sessionId = String(body.sessionId ?? "ses_1");

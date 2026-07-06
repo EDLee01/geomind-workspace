@@ -452,9 +452,26 @@ export class MagiClient {
   }
 
   /** Hide a session locally. Magi's Control API has no delete route (the
-   *  store supports it; the route does not exist as of 0.1.13) — persist
-   *  `deletedSessionIds()` so the hide survives restarts. */
+   *  store deletes the row + cascades messages. We also record the id in
+   *  `deletedSessions` (persisted via `deletedSessionIds()`) so the session
+   *  hides immediately and stays hidden against daemons too old to have the
+   *  route. A 409 (session has a running job) is surfaced to the caller. */
   async deleteSession(sessionId: string): Promise<void> {
+    const res = await this.fetchAuthed(`/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+    // 404 → either already gone or the daemon predates this route; either way
+    // the local hide below is the correct outcome, so don't throw.
+    if (!res.ok && res.status !== 404) {
+      let detail = "";
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body.error) detail = `: ${body.error}`;
+      } catch {
+        /* no JSON body */
+      }
+      throw new Error(`Magi DELETE /sessions/${sessionId} failed (${res.status})${detail}`);
+    }
     this.deletedSessions.add(sessionId);
   }
 
