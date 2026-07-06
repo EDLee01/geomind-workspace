@@ -65,6 +65,7 @@ describe("MagiClient ↔ Magi Control API", () => {
         e.type === "tool.updated" && e.status === "success",
     );
     expect(toolDone?.tool).toBe("WebSearch");
+    expect(toolDone?.output).toBe("5 results");
 
     client.close();
     expect(client.getStatus()).toBe("offline");

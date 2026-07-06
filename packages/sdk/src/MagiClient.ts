@@ -305,13 +305,21 @@ export class MagiClient {
       case "agent.tool.completed":
       case "agent.tool.failed": {
         const failed = ev.action === "agent.tool.failed";
+        // Prefer the tool output carried on the event itself; fall back to the
+        // failure reason (older daemons that don't inline output on failures).
+        const output =
+          typeof meta.output === "string"
+            ? meta.output
+            : failed && typeof meta.reason === "string"
+              ? meta.reason
+              : undefined;
         this.emit({
           type: "tool.updated",
           sessionId,
           callId: String(meta.toolCallId ?? ""),
           tool: ev.target ?? "tool",
           status: failed ? "failed" : "success",
-          output: failed && typeof meta.reason === "string" ? meta.reason : undefined,
+          output,
         });
         return;
       }

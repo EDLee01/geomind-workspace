@@ -34,7 +34,7 @@ export function startMockMagi(port = 0): Promise<MockMagi> {
     push("agent.text.delta", sessionId, jobId, { text: "Planning ", length: 9 });
     push("agent.text.delta", sessionId, jobId, { text: "the analysis. ", length: 14 });
     push("agent.tool.use", sessionId, jobId, { id: "tu1", input: { query: "lakes" } }, "WebSearch");
-    push("agent.tool.completed", sessionId, jobId, { toolCallId: "tu1" }, "WebSearch");
+    push("agent.tool.completed", sessionId, jobId, { toolCallId: "tu1", output: "5 results", outputLength: 9 }, "WebSearch");
     push("agent.text.delta", sessionId, jobId, { text: "Wrote report.md.", length: 16 });
     push("agent.assistant.message", sessionId, jobId, { text: "Planning the analysis. Wrote report.md.", toolUseCount: 0 });
     messages.set(sessionId, [
