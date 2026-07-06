@@ -136,9 +136,17 @@ export interface HistoryMessage {
 export interface HistoryPart {
   type: "text" | "tool";
   text?: string;
+  /** Runtime-generated marker text (kept for parity with the thread reducer;
+   *  Magi never sets it). */
+  synthetic?: boolean;
   tool?: string;
   state?: {
-    status?: "completed" | "error";
+    status?: "completed" | "error" | "running" | "pending";
+    /** A short title for the tool row. Magi history has none; the reducer
+     *  falls back to the tool name. */
+    title?: string;
+    /** Tool arguments. Not present in Magi history (only live). */
+    input?: Record<string, unknown>;
     output?: string;
   };
 }

@@ -11,35 +11,32 @@ describe("connectorConfig", () => {
   it("launches a `-m module` connector (paper-search)", () => {
     const cfg = connectorConfig(byId("paper-search"), "/env/bin/python");
     expect(cfg).toMatchObject({
-      type: "local",
-      command: ["/env/bin/python", "-m", "paper_search_mcp.server"],
-      enabled: true,
+      command: "/env/bin/python",
+      args: ["-m", "paper_search_mcp.server"],
+      approval: "dangerous",
     });
-    expect(cfg.type === "local" && cfg.environment).toBeUndefined();
+    expect(cfg.env).toBeUndefined();
   });
 
   it("launches a console-script connector beside the interpreter (unix)", () => {
     const cfg = connectorConfig(byId("materials-project"), "/env/bin/python");
-    expect(cfg.type === "local" && cfg.command).toEqual([
-      "/env/bin/mcp-materials-project",
-    ]);
+    expect(cfg.command).toBe("/env/bin/mcp-materials-project");
+    expect(cfg.args).toEqual([]);
   });
 
   it("resolves the console script on Windows with .exe", () => {
     const cfg = connectorConfig(byId("fred"), "C:\\env\\Scripts\\python.exe", "KEY");
-    expect(cfg.type === "local" && cfg.command).toEqual([
-      "C:\\env\\Scripts\\fred-mcp.exe",
-    ]);
+    expect(cfg.command).toBe("C:\\env\\Scripts\\fred-mcp.exe");
   });
 
-  it("passes an API key via environment, trimmed", () => {
+  it("passes an API key via env, trimmed", () => {
     const cfg = connectorConfig(byId("materials-project"), "/env/bin/python", "  mp-secret  ");
-    expect(cfg.type === "local" && cfg.environment).toEqual({ MP_API_KEY: "mp-secret" });
+    expect(cfg.env).toEqual({ MP_API_KEY: "mp-secret" });
   });
 
-  it("omits environment when the key is blank", () => {
+  it("omits env when the key is blank", () => {
     const cfg = connectorConfig(byId("fred"), "/env/bin/python", "   ");
-    expect(cfg.type === "local" && cfg.environment).toBeUndefined();
+    expect(cfg.env).toBeUndefined();
   });
 
   it("every connector declares an id, discipline, package, and a launch path", () => {

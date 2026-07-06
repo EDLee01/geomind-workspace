@@ -16,19 +16,17 @@ const MODEL_TONE: Record<ModelStatus, string> = {
 };
 
 export function StatusPills() {
-  // Both live from the runtime: connection status + the configured default model.
+  // Both live from the runtime: connection status + the active model alias
+  // (Magi resolves the alias to a concrete provider/model server-side).
   const runtime = useRuntimeStore((s) => s.status);
-  const defaultModel = useRuntimeStore((s) => s.defaultModel);
-  const model: ModelStatus = defaultModel ? "connected" : "disconnected";
+  const modelAlias = useRuntimeStore((s) => s.model);
+  const connected = useRuntimeStore((s) => s.status === "ready");
+  const model: ModelStatus = connected ? "connected" : "disconnected";
 
   return (
     <div className="flex flex-col gap-1 text-xs text-muted">
       <Pill dot={RUNTIME_TONE[runtime]} label="Runtime" value={runtime} />
-      <Pill
-        dot={MODEL_TONE[model]}
-        label="Model"
-        value={defaultModel ? defaultModel.split("/").pop()! : "not set"}
-      />
+      <Pill dot={MODEL_TONE[model]} label="Model" value={modelAlias || "not set"} />
     </div>
   );
 }

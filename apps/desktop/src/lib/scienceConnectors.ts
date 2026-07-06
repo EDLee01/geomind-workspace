@@ -2,7 +2,15 @@
 // maintained open-source MCP servers — we one-click provision them into a
 // shared isolated env (bundled uv) and register them; we do not reimplement
 // literature/database access ourselves. Keep this list small and vetted.
-import type { McpConfig } from "@ai4s/sdk";
+/** A Magi `mcp.servers.<name>` entry (config.yaml shape). Magi has no HTTP
+ *  route to write config, so the desktop shell hands this to the Rust side,
+ *  which merges it into config.yaml and restarts the daemon. */
+export interface MagiMcpConfig {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  approval: "always" | "dangerous" | "never";
+}
 
 export interface ScienceConnector {
   /** MCP server name written into OpenCode's config. */
@@ -82,13 +90,13 @@ export function connectorConfig(
   c: ScienceConnector,
   python: string,
   apiKey?: string,
-): McpConfig {
-  const command = c.bin
+): MagiMcpConfig {
+  const [command, ...args] = c.bin
     ? [scriptBeside(python, c.bin)]
     : [python, "-m", c.module ?? "", ...(c.args ?? [])];
-  const config: McpConfig = { type: "local", command, enabled: true };
+  const config: MagiMcpConfig = { command, args, approval: "dangerous" };
   if (c.apiKeyEnv && apiKey && apiKey.trim()) {
-    config.environment = { [c.apiKeyEnv]: apiKey.trim() };
+    config.env = { [c.apiKeyEnv]: apiKey.trim() };
   }
   return config;
 }

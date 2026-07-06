@@ -215,12 +215,8 @@ function PermissionCard({
           Reject
         </button>
         <div className="flex-1" />
-        <button
-          className="rounded-input border border-border px-3 py-1.5 text-xs text-text hover:bg-surface-2"
-          onClick={() => onReply(permission.requestId, "always")}
-        >
-          Always allow
-        </button>
+        {/* Magi approvals are one-shot booleans — there is no server-side
+            "always allow" rule store, so only Allow once / Reject are offered. */}
         <button
           className="rounded-input bg-accent px-3.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90"
           onClick={() => onReply(permission.requestId, "once")}

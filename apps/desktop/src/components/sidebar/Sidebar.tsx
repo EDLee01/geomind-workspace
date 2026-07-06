@@ -27,10 +27,7 @@ export function Sidebar({ project }: { project: Project }) {
   };
 
   const rows: Row[] = [
-    // Subagent child sessions are internals of their parent conversation —
-    // their asks and progress surface there, so they get no row of their own.
     ...sessions
-      .filter((s) => !s.parentId)
       .map((s) => ({ id: s.id, title: s.title, to: `/live/${s.id}`, kind: "session" as const })),
     ...project.sessions
       .filter((e) => !hiddenExamples.includes(e.id))

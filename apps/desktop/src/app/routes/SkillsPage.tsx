@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bot, Boxes, Check, Package, Puzzle, X } from "lucide-react";
+import { Boxes, Check, Package, Puzzle, X } from "lucide-react";
 import { useRuntimeStore } from "@/lib/runtime";
 import { cn } from "@/lib/cn";
 
 /**
  * Skills, agents, install-a-skill, and detected scientific environment — all real:
- * skills/agents from the OpenCode runtime, environment from the host system.
+ * skills from the Magi runtime, environment from the host system.
  */
 export function SkillsPage() {
   const navigate = useNavigate();
-  const { skills, agents, tools, status, loadCatalog, detectTools, installSkill } = useRuntimeStore();
+  const { skills, tools, status, loadCatalog, detectTools, installSkill } = useRuntimeStore();
   const connected = status === "ready";
   const [text, setText] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -34,10 +34,10 @@ export function SkillsPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-8 py-8">
-        <h1 className="font-serif text-xl text-text">Skills &amp; Agents</h1>
+        <h1 className="font-serif text-xl text-text">Skills</h1>
         <p className="mt-1 text-sm text-muted">
-          Loaded live from the OpenCode runtime — the bundled ai4s-skills pack plus anything under{" "}
-          <span className="font-mono">.opencode/skills/</span> in your workspace.
+          Loaded live from the Magi runtime — the bundled geomind skills pack plus anything under{" "}
+          <span className="font-mono">~/.magi-next/skills/</span>.
         </p>
 
         {/* Install a skill (#1) */}
@@ -80,29 +80,21 @@ export function SkillsPage() {
             </div>
           ))}
           <p className="px-4 py-2 text-xs text-muted">
-            OpenCode runs code with whatever is installed here (e.g. Python via its shell tool).
+            Magi runs code with whatever is installed here (e.g. Python via its shell tool).
             Python/R/Jupyter are not bundled; install them or a Science Pack to enable analysis.
           </p>
         </Section>
 
         {connected ? (
-          <>
-            <Section title={`Agents (${agents.length})`} icon={<Bot size={15} />}>
-              {agents.length === 0 && <Empty>No agents reported.</Empty>}
-              {agents.map((a) => (
-                <RowItem key={a.name} name={a.name} desc={a.description} tag={a.mode} />
-              ))}
-            </Section>
-            <Section title={`Skills (${skills.length})`} icon={<Puzzle size={15} />}>
-              {skills.length === 0 && <Empty>No skills loaded yet.</Empty>}
-              {skills.map((s) => (
-                <RowItem key={s.name} name={s.name} desc={s.description} tag={sourceOf(s.location)} />
-              ))}
-            </Section>
-          </>
+          <Section title={`Skills (${skills.length})`} icon={<Puzzle size={15} />}>
+            {skills.length === 0 && <Empty>No skills loaded yet.</Empty>}
+            {skills.map((s) => (
+              <RowItem key={s.name} name={s.name} desc={s.description} tag={sourceOf(s.location)} />
+            ))}
+          </Section>
         ) : (
           <div className="mt-6 rounded-card border border-border bg-surface p-5 text-sm text-muted">
-            Connect the runtime to list the skills and agents it has loaded.
+            Connect the runtime to list the skills it has loaded.
           </div>
         )}
       </div>

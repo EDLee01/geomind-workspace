@@ -1,5 +1,8 @@
-// Workspace-per-session behavior: a fresh draft's first message creates a new
-// dated folder by default; an explicit switcher choice pins the destination.
+// Workspace-per-session behavior and the turn lifecycle against a mocked Magi
+// client. Magi turns are always async background jobs: sendPrompt returns a
+// jobId immediately and the audit SSE stream drives the rest (idle / error).
+// "!" shell and "/" command turns funnel through the same sendPrompt path
+// (Magi has no shell or slash-command route — see MAGI_RUNTIME_FEASIBILITY.md).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -12,16 +15,10 @@ const mocks = vi.hoisted(() => ({
   failCreates: 0,
   /** Fire a normalized event into the store, as the SSE stream would. */
   fireEvent: (_e: unknown) => {},
-  runShell: vi.fn(),
-  runCommand: vi.fn(),
+  sendPrompt: vi.fn(),
   replyPermission: vi.fn(),
-  /** Next runShell call throws (HTTP-level failure). */
-  failShell: false,
-  /** Next runCommand call throws before any event (HTTP-level failure). */
-  failCommand: false,
-  /** Next runCommand call streams an event, then throws — the WKWebView
-   *  ~60 s fetch kill on a long sync turn ("Load failed"). */
-  dropCommandPost: false,
+  /** Next sendPrompt call throws (HTTP-level failure). */
+  failSend: false,
 }));
 
 vi.mock("./tauri", () => ({
@@ -35,7 +32,7 @@ vi.mock("./tauri", () => ({
 }));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
 vi.mock("@ai4s/sdk", () => {
-  class OpenCodeClient {
+  class MagiClient {
     private statusCb: (s: string) => void = () => {};
     onStatus(cb: (s: string) => void) {
       this.statusCb = cb;
@@ -43,10 +40,12 @@ vi.mock("@ai4s/sdk", () => {
     onEvent(cb: (e: unknown) => void) {
       mocks.fireEvent = cb;
     }
+    onCredentials() {}
+    setModel() {}
     async connect() {
       if (mocks.failConnects > 0) {
         mocks.failConnects--;
-        throw new Error("Could not open OpenCode event stream");
+        throw new Error("Could not open Magi event stream");
       }
       this.statusCb("ready");
     }
@@ -54,13 +53,19 @@ vi.mock("@ai4s/sdk", () => {
       return [];
     }
     async listSkills() {
-      return [{ name: "stub" }];
+      return [{ name: "stub", description: "", location: "" }];
     }
-    async listAgents() {
+    async listProviders() {
+      return { providers: [], aliases: { main: "siliconflow/DeepSeek-V3" } };
+    }
+    async listQuestions() {
       return [];
     }
-    async getDefaultModel() {
-      return null;
+    async listPermissions() {
+      return [];
+    }
+    async getMessages() {
+      return [];
     }
     async createSession() {
       if (mocks.failCreates > 0) {
@@ -69,54 +74,29 @@ vi.mock("@ai4s/sdk", () => {
       }
       return "ses_new";
     }
-    async sendPrompt() {}
-    async listCommands() {
-      return [{ name: "init", description: "guided AGENTS.md setup", source: "command" }];
-    }
-    // Like the real endpoints, shell/command resolve only when the turn is
-    // over — and session.idle fires BEFORE the POST resolves.
-    async runShell(sid: string, command: string, agent: string) {
-      mocks.runShell(sid, command, agent);
-      if (mocks.failShell) throw new Error("shell exploded");
-      mocks.fireEvent({
-        type: "tool.updated",
-        sessionId: sid,
-        callId: "csh",
-        tool: "bash",
-        status: "success",
-        title: "",
-        input: { command },
-        output: "/ws/mock\n",
-      });
-      mocks.fireEvent({ type: "session.idle", sessionId: sid });
-    }
-    async runCommand(sid: string, name: string, args?: string) {
-      mocks.runCommand(sid, name, args);
-      if (mocks.failCommand) throw new Error("command exploded");
-      if (mocks.dropCommandPost) {
-        mocks.fireEvent({ type: "text.updated", sessionId: sid, partId: "t1", text: "working…" });
-        throw new Error("Load failed");
-      }
-      mocks.fireEvent({ type: "session.idle", sessionId: sid });
+    // Magi's sendPrompt returns a jobId and streams over SSE; the turn stays
+    // running until a session.idle / error event arrives.
+    async sendPrompt(sid: string, text: string) {
+      mocks.sendPrompt(sid, text);
+      if (mocks.failSend) throw new Error("send exploded");
+      return "job_1";
     }
     async replyPermission(requestId: string, reply: string) {
       mocks.replyPermission(requestId, reply);
     }
     close() {}
   }
-  return { OpenCodeClient, DEFAULT_OPENCODE_URL: "http://127.0.0.1:4096" };
+  return { MagiClient, DEFAULT_MAGI_URL: "http://127.0.0.1:8765" };
 });
 
 import type { ArtifactBlock } from "@ai4s/shared";
-import { DRAFT_KEY, rootSessionOf, useRuntimeStore } from "./runtime";
+import { DRAFT_KEY, useRuntimeStore } from "./runtime";
 
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.failConnects = 0;
   mocks.failCreates = 0;
-  mocks.failShell = false;
-  mocks.failCommand = false;
-  mocks.dropCommandPost = false;
+  mocks.failSend = false;
   useRuntimeStore.setState({
     currentId: null,
     workspacePinned: false,
@@ -125,7 +105,6 @@ beforeEach(async () => {
     sending: false,
     runningSessions: {},
     permissions: [],
-    sessionParents: {},
     panes: {},
   });
   await useRuntimeStore.getState().connect();
@@ -249,30 +228,18 @@ describe("per-session workspace folders", () => {
     expect(useRuntimeStore.getState().status).toBe("ready");
   });
 
-  it("runShell: echoes `! cmd`, runs it, and ends the turn even though idle beat the POST", async () => {
+  it("runShell: echoes `! cmd` and asks the agent to run the command", async () => {
     const id = await useRuntimeStore.getState().runShell("pwd");
     expect(id).toBe("ses_new");
-    expect(mocks.runShell).toHaveBeenCalledWith("ses_new", "pwd", "build");
+    // Magi has no shell route — the command is sent as a prompt for the agent.
+    expect(mocks.sendPrompt).toHaveBeenCalledWith("ses_new", expect.stringContaining("pwd"));
     const s = useRuntimeStore.getState();
     expect(s.threads["ses_new"].blocks[0]).toEqual({ kind: "user", text: "! pwd" });
-    // The sync endpoint resolves after session.idle already fired — the
-    // running lock must not stick (it was set before the POST, cleared after).
-    expect(s.runningSessions["ses_new"]).toBeUndefined();
-    expect(s.shellTurns["ses_new"]).toBeUndefined();
+    expect(s.runningSessions["ses_new"]).toBe(true); // async job, cleared by idle
     expect(s.sending).toBe(false);
   });
 
-  it("runShell: the bash row carries the command as title and the output inline", async () => {
-    await useRuntimeStore.getState().runShell("pwd");
-    const bash = useRuntimeStore
-      .getState()
-      .threads["ses_new"].blocks.find((b) => b.kind === "tool-call");
-    // The shell endpoint reports an empty title — the command line stands in,
-    // and the output shows inline (it IS the result the user asked for).
-    expect(bash).toMatchObject({ title: "pwd", status: "success", outputSummary: "/ws/mock" });
-  });
-
-  it("an agent bash step (no shell turn) stays a quiet line without inline output", async () => {
+  it("an agent bash step stays a quiet line without inline output", async () => {
     await useRuntimeStore.getState().sendPrompt("hi");
     mocks.fireEvent({
       type: "tool.updated",
@@ -292,7 +259,7 @@ describe("per-session workspace folders", () => {
   });
 
   it("runShell failure lands as a red line and unlocks the composer", async () => {
-    mocks.failShell = true;
+    mocks.failSend = true;
     await useRuntimeStore.getState().runShell("pwd");
     const s = useRuntimeStore.getState();
     expect(s.threads["ses_new"].blocks.slice(-1)[0]).toMatchObject({
@@ -300,17 +267,26 @@ describe("per-session workspace folders", () => {
       tone: "error",
     });
     expect(s.runningSessions["ses_new"]).toBeUndefined();
-    expect(s.shellTurns["ses_new"]).toBeUndefined(); // no events will clear it
     expect(s.sending).toBe(false);
   });
 
-  it("runCommand: echoes `/name args` and posts the command with its arguments", async () => {
+  it("runCommand: echoes `/name args` and sends the command verbatim", async () => {
     const id = await useRuntimeStore.getState().runCommand("init", "focus on tests");
     expect(id).toBe("ses_new");
-    expect(mocks.runCommand).toHaveBeenCalledWith("ses_new", "init", "focus on tests");
+    expect(mocks.sendPrompt).toHaveBeenCalledWith("ses_new", "/init focus on tests");
     const s = useRuntimeStore.getState();
     expect(s.threads["ses_new"].blocks[0]).toEqual({ kind: "user", text: "/init focus on tests" });
+    expect(s.runningSessions["ses_new"]).toBe(true);
+  });
+
+  it("a command send that fails shows the red line and unlocks the composer", async () => {
+    mocks.failSend = true;
+    await useRuntimeStore.getState().runCommand("init");
+    const s = useRuntimeStore.getState();
+    const blocks = s.threads["ses_new"].blocks;
+    expect(blocks[blocks.length - 1]).toMatchObject({ kind: "status-line", tone: "error" });
     expect(s.runningSessions["ses_new"]).toBeUndefined();
+    expect(s.sending).toBe(false);
   });
 
   it("switchWorkspace pins the chosen folder; startDraft un-pins it", async () => {
@@ -322,75 +298,24 @@ describe("per-session workspace folders", () => {
   });
 });
 
-// A task tool spawns a subagent in a CHILD session; its permission asks carry
-// the child's id, and a sync POST held open for a long turn is killed by
-// WKWebView at ~60 s. Both must not strand the conversation.
-describe("subagent permission asks and long sync turns", () => {
-  it("maps a task tool's child session to the parent conversation", async () => {
-    const id = await useRuntimeStore.getState().sendPrompt("explore the repo");
-    mocks.fireEvent({
-      type: "tool.updated",
-      sessionId: id,
-      callId: "c1",
-      tool: "task",
-      status: "running",
-      title: "Explore repo",
-      childSessionId: "ses_child",
-    });
-    mocks.fireEvent({
-      type: "permission.asked",
-      sessionId: "ses_child",
-      requestId: "per_1",
-      action: "external_directory",
-      resources: ["/repo/*"],
-    });
-    const s = useRuntimeStore.getState();
-    expect(s.sessionParents["ses_child"]).toBe(id);
-    expect(rootSessionOf(s.sessionParents, "ses_child")).toBe(id);
-    expect(s.permissions).toHaveLength(1);
-  });
-
-  it("keeps the turn alive when a sync POST dies mid-turn but SSE kept streaming", async () => {
-    mocks.dropCommandPost = true;
-    const id = await useRuntimeStore.getState().runCommand("growth-marketing");
-    expect(id).toBe("ses_new");
-    const s = useRuntimeStore.getState();
-    expect(
-      s.threads["ses_new"].blocks.some((b) => b.kind === "status-line" && b.tone === "error"),
-    ).toBe(false);
-    expect(s.runningSessions["ses_new"]).toBe(true); // still working server-side
-    expect(s.sending).toBe(false); // composer input unlocked for the queue
-    mocks.fireEvent({ type: "session.idle", sessionId: "ses_new" });
-    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
-  });
-
-  it("a command POST that fails before any event still shows the red line", async () => {
-    mocks.failCommand = true;
-    await useRuntimeStore.getState().runCommand("init");
-    const s = useRuntimeStore.getState();
-    const blocks = s.threads["ses_new"].blocks;
-    expect(blocks[blocks.length - 1]).toMatchObject({ kind: "status-line", tone: "error" });
-    expect(s.runningSessions["ses_new"]).toBeUndefined();
-    expect(s.sending).toBe(false);
-  });
-
+describe("permission asks", () => {
   it("one reply answers all identical pending asks (same session, action, resources)", async () => {
     await useRuntimeStore.getState().sendPrompt("go");
     const ask = (requestId: string) =>
       mocks.fireEvent({
         type: "permission.asked",
-        sessionId: "ses_child",
+        sessionId: "ses_new",
         requestId,
-        action: "external_directory",
-        resources: ["/repo/*"],
+        action: "Bash",
+        resources: ["rm -rf build"],
       });
-    ask("per_a");
-    ask("per_b");
-    ask("per_c");
+    ask("job_1:a");
+    ask("job_1:b");
+    ask("job_1:c");
     expect(useRuntimeStore.getState().permissions).toHaveLength(3);
-    await useRuntimeStore.getState().replyPermission("per_a", "always");
+    await useRuntimeStore.getState().replyPermission("job_1:a", "once");
     expect(mocks.replyPermission).toHaveBeenCalledTimes(3);
-    expect(mocks.replyPermission).toHaveBeenCalledWith("per_b", "always");
+    expect(mocks.replyPermission).toHaveBeenCalledWith("job_1:b", "once");
     expect(useRuntimeStore.getState().permissions).toHaveLength(0);
   });
 });
@@ -475,4 +400,3 @@ describe("per-session right pane", () => {
     expect(useRuntimeStore.getState().panes["ses_1"]).toBeUndefined();
   });
 });
-

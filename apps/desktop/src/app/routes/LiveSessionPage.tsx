@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { FolderOpen, Loader2, NotebookPen, PlugZap } from "lucide-react";
-import { DRAFT_KEY, rootSessionOf, useRuntimeStore } from "@/lib/runtime";
+import { DRAFT_KEY, useRuntimeStore } from "@/lib/runtime";
 import { fileInspectorFromBlock } from "@/lib/artifacts";
 import { useScrollMemory } from "@/lib/scrollMemory";
 import { BlockList, type BlockHandlers } from "@/components/thread/BlockList";
@@ -13,7 +13,7 @@ import { InspectorShell } from "@/components/inspector/InspectorShell";
 import { SessionFilesPane } from "./FilesPage";
 import { cn } from "@/lib/cn";
 
-/** Live agent session backed by the OpenCode runtime. `/live` (no id) is a blank draft;
+/** Live agent session backed by the Magi runtime. `/live` (no id) is a blank draft;
  *  the session is created lazily on the first message, then the URL updates to /live/:id. */
 export function LiveSessionPage() {
   const { sessionId } = useParams();
@@ -30,7 +30,6 @@ export function LiveSessionPage() {
     error,
     questions,
     permissions,
-    sessionParents,
     workspace,
     panes,
     commands,
@@ -91,19 +90,14 @@ export function LiveSessionPage() {
   const running = !!(currentId && runningSessions[currentId]);
   const working = sending || running;
 
-  // The oldest unanswered request blocks the run — surface it. Requests from
-  // subagents carry their CHILD session id; resolve through the parent chain
-  // so they still land in the conversation the user is looking at.
-  const belongsHere = (sid: string) =>
-    !!currentId && (sid === currentId || rootSessionOf(sessionParents, sid) === currentId);
+  // The oldest unanswered request blocks the run — surface it. Magi runs
+  // subagents in-process and does not expose their sessions on the stream, so
+  // every ask carries the conversation's own session id.
+  const belongsHere = (sid: string) => !!currentId && sid === currentId;
   const activeQuestion = questions.find((q) => belongsHere(q.sessionId));
   const activePermission = permissions.find((p) => belongsHere(p.sessionId));
   const activeRequest = activeQuestion ?? activePermission;
-  // Name the subagent on the card when the ask isn't from the main agent.
-  const requestOrigin =
-    activeRequest && activeRequest.sessionId !== currentId
-      ? (sessions.find((s) => s.id === activeRequest.sessionId)?.title ?? "a subagent")
-      : undefined;
+  const requestOrigin = undefined;
 
   // Notebooks the agent touched in THIS session — the conversation ↔ notebook map.
   const sessionNotebooks = (thread?.blocks ?? []).filter(
@@ -201,10 +195,10 @@ export function LiveSessionPage() {
                 real error/offline states. */}
             {!connected && !connecting && (
               <div className="rounded-card border border-border bg-surface p-5 shadow-card">
-                <div className="text-sm font-medium text-text">OpenCode runtime</div>
+                <div className="text-sm font-medium text-text">Magi runtime</div>
                 <p className="mt-1 text-sm text-muted">
-                  The desktop app runs a bundled OpenCode automatically. In the browser, start one with{" "}
-                  <span className="font-mono">opencode serve</span> and connect.
+                  The desktop app runs a bundled Magi daemon automatically. In the browser, start one with{" "}
+                  <span className="font-mono">magi serve</span> and connect.
                 </p>
                 <div className="mt-3 rounded-input bg-surface-2 px-3 py-2 font-mono text-xs text-text">
                   {serverUrl}
@@ -305,7 +299,7 @@ function ThreadSkeleton() {
 function ConnBadge({ status }: { status: string }) {
   const tone = status === "ready" ? "text-ok" : status === "error" ? "text-error" : "text-muted";
   return (
-    <span className={cn("flex items-center gap-1.5 text-xs", tone)} title={`OpenCode · ${status}`}>
+    <span className={cn("flex items-center gap-1.5 text-xs", tone)} title={`Magi · ${status}`}>
       <span
         className={cn(
           "h-1.5 w-1.5 rounded-full",
@@ -315,7 +309,7 @@ function ConnBadge({ status }: { status: string }) {
       />
       {/* Ready is the norm — a green dot says it all (hover for detail). Text
           appears only for states that need attention. */}
-      {status !== "ready" && <>OpenCode · {status}</>}
+      {status !== "ready" && <>Magi · {status}</>}
     </span>
   );
 }

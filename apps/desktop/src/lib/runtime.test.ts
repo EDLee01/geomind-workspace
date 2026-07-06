@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { OpenCodeEvent, HistoryMessage } from "@ai4s/sdk";
+import type { RuntimeEvent, HistoryMessage } from "@ai4s/sdk";
 import { datedWorkspaceName, foldEvent, historyToThread, tidyToolTitle, type FoldState } from "./runtime";
 
 const empty: FoldState = { blocks: [], index: {} };
 const S = "ses_1";
-const foldAll = (events: OpenCodeEvent[]): FoldState =>
+const foldAll = (events: RuntimeEvent[]): FoldState =>
   events.reduce((s, e) => foldEvent(s, e), empty);
 
 describe("tidyToolTitle", () => {
@@ -116,6 +116,10 @@ describe("foldEvent", () => {
 });
 
 describe("historyToThread", () => {
+  // Magi persists a flat role/content transcript; MagiClient.getMessages folds
+  // `tool` rows into the preceding assistant message carrying only a name +
+  // status (no input/title/args, no synthetic shell markers or slash-command
+  // template expansions — those were OpenCode-specific).
   it("converts user/assistant messages (text + tool parts) into blocks", () => {
     const msgs: HistoryMessage[] = [
       { role: "user", parts: [{ type: "text", text: "hi" }] },
@@ -123,105 +127,59 @@ describe("historyToThread", () => {
         role: "assistant",
         parts: [
           { type: "text", text: "planning" },
-          { type: "tool", tool: "search", state: { status: "completed", title: "search" } },
+          { type: "tool", tool: "WebSearch", state: { status: "completed" } },
         ],
       },
     ];
     const t = historyToThread(msgs);
     expect(t.blocks.map((b) => b.kind)).toEqual(["user", "agent", "tool-call"]);
-    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "success" });
+    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "success", title: "WebSearch" });
   });
 
-  it("renders a user-run '!' shell turn like the live path: '! cmd' + inline output", () => {
-    // OpenCode records a "!" run as a synthetic user text + a bash tool part.
-    const msgs: HistoryMessage[] = [
-      {
-        role: "user",
-        parts: [{ type: "text", text: "The following tool was executed by the user", synthetic: true }],
-      },
-      {
-        role: "assistant",
-        parts: [
-          {
-            type: "tool",
-            tool: "bash",
-            state: { status: "completed", title: "", input: { command: "pwd" }, output: "/ws/here\n" },
-          },
-        ],
-      },
-    ];
-    const t = historyToThread(msgs);
-    expect(t.blocks).toEqual([
-      { kind: "user", text: "! pwd" },
-      { kind: "tool-call", title: "pwd", status: "success", outputSummary: "/ws/here" },
-    ]);
-  });
-
-  it("falls back to the bash command as the row title (agent steps too)", () => {
+  it("titles a tool row by its tool name (no input/title in Magi history)", () => {
     const msgs: HistoryMessage[] = [
       {
         role: "assistant",
-        parts: [
-          { type: "tool", tool: "bash", state: { status: "completed", title: "", input: { command: "ls -la" } } },
-        ],
+        parts: [{ type: "tool", tool: "Bash", state: { status: "completed", output: "ok" } }],
       },
     ];
     const t = historyToThread(msgs);
-    expect(t.blocks[0]).toMatchObject({ kind: "tool-call", title: "ls -la" });
-    // An agent bash step (no synthetic marker) never shows inline output.
+    expect(t.blocks[0]).toMatchObject({ kind: "tool-call", title: "Bash", status: "success" });
     expect(t.blocks[0]).not.toHaveProperty("outputSummary");
   });
 
-  it("never spins in history: frozen running/pending steps become quiet + one interrupted line", () => {
+  it("maps a failed tool row to the failed status", () => {
     const msgs: HistoryMessage[] = [
-      { role: "user", parts: [{ type: "text", text: "explore" }] },
+      {
+        role: "assistant",
+        parts: [{ type: "tool", tool: "Bash", state: { status: "error", output: "boom" } }],
+      },
+    ];
+    const t = historyToThread(msgs);
+    expect(t.blocks[0]).toMatchObject({ kind: "tool-call", status: "failed" });
+  });
+
+  it("skips interactive question/permission and todo tool rows", () => {
+    const msgs: HistoryMessage[] = [
       {
         role: "assistant",
         parts: [
-          { type: "tool", tool: "read", state: { status: "running", title: "README.md" } },
-          { type: "tool", tool: "glob", state: { status: "pending", title: "*.md" } },
+          { type: "tool", tool: "AskUserQuestion", state: { status: "completed" } },
+          { type: "tool", tool: "TodoWrite", state: { status: "completed" } },
+          { type: "tool", tool: "Read", state: { status: "completed" } },
         ],
       },
     ];
     const t = historyToThread(msgs);
-    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "pending" });
-    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "pending" });
-    const last = t.blocks[t.blocks.length - 1];
-    expect(last).toMatchObject({ kind: "status-line", tone: "error" });
+    expect(t.blocks.map((b) => (b.kind === "tool-call" ? b.title : b.kind))).toEqual(["Read"]);
   });
 
-  it("shows a slash command as what the user typed, not its expanded template", () => {
-    // OpenCode stores the EXPANDED command/skill template as the user message,
-    // with typed arguments appended — reverse-map via the known templates.
-    const template = "\nThis skill guides growth for indie AI products…\n\n## Core Philosophy\n…";
+  it("drops empty user/assistant text", () => {
     const msgs: HistoryMessage[] = [
-      { role: "user", parts: [{ type: "text", text: template.trim() }] },
-      { role: "assistant", parts: [{ type: "text", text: "on it" }] },
-      { role: "user", parts: [{ type: "text", text: `${template.trim()}\n\n帮我设计增长方式` }] },
-    ];
-    const t = historyToThread(msgs, [
-      { name: "growth-marketing", source: "skill", template },
-    ]);
-    expect(t.blocks[0]).toEqual({ kind: "user", text: "/growth-marketing" });
-    expect(t.blocks[2]).toEqual({ kind: "user", text: "/growth-marketing 帮我设计增长方式" });
-  });
-
-  it("leaves a long pasted user text alone when it matches no template", () => {
-    const msgs: HistoryMessage[] = [
-      { role: "user", parts: [{ type: "text", text: "a genuinely long pasted question…" }] },
-    ];
-    const t = historyToThread(msgs, [{ name: "init", template: "something else" }]);
-    expect(t.blocks[0]).toEqual({ kind: "user", text: "a genuinely long pasted question…" });
-  });
-
-  it("adds no interrupted line when every step finished", () => {
-    const msgs: HistoryMessage[] = [
-      {
-        role: "assistant",
-        parts: [{ type: "tool", tool: "read", state: { status: "completed", title: "README.md" } }],
-      },
+      { role: "user", parts: [{ type: "text", text: "   " }] },
+      { role: "assistant", parts: [{ type: "text", text: "answer" }] },
     ];
     const t = historyToThread(msgs);
-    expect(t.blocks.every((b) => b.kind !== "status-line")).toBe(true);
+    expect(t.blocks.map((b) => b.kind)).toEqual(["agent"]);
   });
 });

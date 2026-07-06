@@ -23,12 +23,14 @@ vi.mock("@/lib/tauri", () => ({
 vi.mock("@/lib/kernel", () => ({ kernelReset: async () => {} }));
 // switchWorkspace reconnects after a pick — give it a client that connects instantly.
 vi.mock("@ai4s/sdk", () => {
-  class OpenCodeClient {
+  class MagiClient {
     private statusCb: (s: string) => void = () => {};
     onStatus(cb: (s: string) => void) {
       this.statusCb = cb;
     }
     onEvent() {}
+    onCredentials() {}
+    setModel() {}
     async connect() {
       this.statusCb("ready");
     }
@@ -36,17 +38,14 @@ vi.mock("@ai4s/sdk", () => {
       return [];
     }
     async listSkills() {
-      return [{ name: "stub" }];
+      return [{ name: "stub", description: "", location: "" }];
     }
-    async listAgents() {
-      return [];
-    }
-    async getDefaultModel() {
-      return null;
+    async listProviders() {
+      return { providers: [], aliases: { main: "x" } };
     }
     close() {}
   }
-  return { OpenCodeClient, DEFAULT_OPENCODE_URL: "http://127.0.0.1:4096" };
+  return { MagiClient, DEFAULT_MAGI_URL: "http://127.0.0.1:8765" };
 });
 
 describe("WorkspaceChip", () => {

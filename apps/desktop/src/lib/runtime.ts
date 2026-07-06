@@ -1,11 +1,9 @@
 import { create } from "zustand";
 import {
-  OpenCodeClient,
-  DEFAULT_OPENCODE_URL,
-  type AgentInfo,
-  type CommandInfo,
+  MagiClient,
+  DEFAULT_MAGI_URL,
   type HistoryMessage,
-  type OpenCodeEvent,
+  type RuntimeEvent,
   type PermissionAskedEvent,
   type PermissionReply,
   type QuestionAskedEvent,
@@ -31,12 +29,12 @@ import { provenanceInputFromEvent, recordProvenance } from "./provenance";
 import { splitReview } from "./review";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const URL_KEY = "ai4s.opencodeUrl";
+const URL_KEY = "ai4s.magiUrl";
 const HIDDEN_KEY = "ai4s.hiddenExamples";
 
 function initialUrl(): string {
-  if (typeof window === "undefined") return DEFAULT_OPENCODE_URL;
-  return window.localStorage.getItem(URL_KEY) ?? DEFAULT_OPENCODE_URL;
+  if (typeof window === "undefined") return DEFAULT_MAGI_URL;
+  return window.localStorage.getItem(URL_KEY) ?? DEFAULT_MAGI_URL;
 }
 function initialHidden(): string[] {
   if (typeof window === "undefined") return [];
@@ -67,21 +65,19 @@ interface RuntimeState {
   currentId: string | null;
   threads: Record<string, Thread>;
   skills: SkillInfo[];
-  agents: AgentInfo[];
-  /** Slash commands the runtime can run ("/" palette): config commands,
-   *  skills and MCP prompts, one merged list from GET /command. */
-  commands: CommandInfo[];
-  /** Configured default model ("provider/model"), or null when unset. */
-  defaultModel: string | null;
+  /** The "/" palette: Magi has no slash-command catalog route, so this mirrors
+   *  the installed skills (the only runnable "/name" items). */
+  commands: Array<{ name: string; description?: string; source?: string }>;
+  /** Model aliases the runtime exposes ("main", "fast", "deep", "auto"). */
+  modelAliases: string[];
+  /** The alias sent with every turn (Magi resolves it server-side). */
+  model: string;
   tools: ToolStatus[];
   hiddenExamples: string[];
   error: string | null;
   /** Pending interactive requests the agent is blocked on, newest last. */
   questions: QuestionAskedEvent[];
   permissions: PermissionAskedEvent[];
-  /** Subagent session → the session whose task tool spawned it, learned from
-   *  task tool events (live) and the session list (recovery after reload). */
-  sessionParents: Record<string, string>;
   /** Right-pane state per session (DRAFT_KEY for a draft) — each session keeps
    *  its own open artifact / Files browser and gets it back when reopened.
    *  In-memory only: an app restart returns every session to a closed pane. */
@@ -93,6 +89,8 @@ interface RuntimeState {
   rejectQuestion: (requestId: string) => Promise<void>;
   replyPermission: (requestId: string, reply: PermissionReply) => Promise<void>;
   setServerUrl: (url: string) => void;
+  /** Switch the model alias sent with every turn. */
+  setModel: (alias: string) => void;
   loadCatalog: () => Promise<void>;
   detectTools: () => Promise<void>;
   connect: () => Promise<void>;
@@ -134,7 +132,7 @@ interface RuntimeState {
   installSkill: (text: string) => Promise<string | null>;
 }
 
-let client: OpenCodeClient | null = null;
+let client: MagiClient | null = null;
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
 /** Threads key for the draft conversation — its blocks move to the real
  *  session id once the session exists, so the page never visibly resets. */
@@ -192,12 +190,12 @@ async function performTurn(
   set: StoreSet,
   get: StoreGet,
   echo: string,
-  post: (sid: string) => Promise<void>,
+  post: (sid: string) => Promise<unknown>,
   syncTurn: boolean,
   shell = false,
 ): Promise<string | null> {
   if (!client) {
-    set({ error: "Not connected to the OpenCode runtime." });
+    set({ error: "Not connected to the Magi runtime." });
     return null;
   }
   if (get().sending) return null; // one send at a time
@@ -317,8 +315,8 @@ async function performTurn(
   }
 }
 
-/** The live OpenCode client (Settings talks to the runtime's config API directly). */
-export function getClient(): OpenCodeClient | null {
+/** The live Magi client (Settings talks to the runtime's config API directly). */
+export function getClient(): MagiClient | null {
   return client;
 }
 
@@ -329,15 +327,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   currentId: null,
   threads: {},
   skills: [],
-  agents: [],
   commands: [],
-  defaultModel: null,
+  modelAliases: [],
+  model: "main",
   tools: [],
   hiddenExamples: initialHidden(),
   error: null,
   questions: [],
   permissions: [],
-  sessionParents: {},
   panes: {},
   workspace: null,
   workspacePinned: false,
@@ -407,24 +404,25 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     set({ serverUrl });
   },
 
+  setModel: (alias) => {
+    client?.setModel(alias);
+    set({ model: alias });
+  },
+
   loadCatalog: async () => {
     if (!client) return;
     try {
-      const [firstSkills, agents, defaultModel, commands] = await Promise.all([
-        client.listSkills(),
-        client.listAgents(),
-        client.getDefaultModel().catch(() => null),
-        client.listCommands().catch(() => []),
+      // Magi resolves skills (from its profile dir) and model aliases (from
+      // config.yaml) server-side — one shot each, no lazy-instance polling.
+      const [skills, providers] = await Promise.all([
+        client.listSkills().catch(() => []),
+        client.listProviders().catch(() => null),
       ]);
-      set({ agents, defaultModel, commands });
-      let skills = firstSkills;
-      // The first workspace-scoped /api/skill call triggers OpenCode's lazy
-      // instance init and can answer before the scan finishes — poll briefly.
-      for (let i = 0; skills.length === 0 && i < 4; i++) {
-        await sleep(400);
-        skills = await client.listSkills();
-      }
-      set({ skills });
+      set({
+        skills,
+        commands: skills.map((s) => ({ name: s.name, description: s.description, source: "skill" })),
+        modelAliases: providers ? Object.keys(providers.aliases) : [],
+      });
     } catch {
       /* ignore transient failures */
     }
@@ -443,7 +441,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // Scope skill discovery to the sidecar's workspace (null in browser dev).
     const directory = await workspacePath();
     set({ workspace: directory });
-    const c = new OpenCodeClient({ baseUrl: get().serverUrl, directory: directory ?? undefined });
+    const c = new MagiClient({
+      baseUrl: get().serverUrl,
+      directory: directory ?? undefined,
+      model: get().model,
+    });
     client = c;
     c.onStatus((status) => {
       void logDebug(`status → ${status}`);
@@ -506,18 +508,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       }
       const sid = event.sessionId;
       if (!sid) return;
-      // A task tool names the subagent session it spawned — remember the
-      // parent link so the child's permission/question asks surface in THIS
-      // conversation, and refresh the list so the child's title is known.
-      if (
-        event.type === "tool.updated" &&
-        event.childSessionId &&
-        get().sessionParents[event.childSessionId] !== sid
-      ) {
-        const child = event.childSessionId;
-        set((s) => ({ sessionParents: { ...s.sessionParents, [child]: sid } }));
-        void get().refreshSessions();
-      }
       set((s) => {
         const cur = s.threads[sid] ?? emptyThread();
         const folded = foldEvent(
@@ -545,7 +535,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         const input = provenanceInputFromEvent(event);
         if (input) {
           recordedProvenance.add(event.callId);
-          void recordProvenance(input, sid, get().defaultModel);
+          void recordProvenance(input, sid, get().model);
         }
       }
       if (event.type === "session.idle") void get().refreshSessions();
@@ -617,13 +607,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     if (!client) return;
     try {
       const sessions = await client.listSessions();
-      set((s) => {
-        // The list also names each subagent session's parent — the recovery
-        // path for parent links after a reload (no live task event to learn from).
-        const sessionParents = { ...s.sessionParents };
-        for (const m of sessions) if (m.parentId) sessionParents[m.id] = m.parentId;
-        return { sessions, sessionParents };
-      });
+      set({ sessions });
     } catch {
       /* ignore transient list failures */
     }
@@ -712,7 +696,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set((s) => ({
         threads: {
           ...s.threads,
-          [id]: { ...historyToThread(messages, s.commands), loaded: true },
+          [id]: { ...historyToThread(messages), loaded: true },
         },
       }));
     } catch (err) {
@@ -722,29 +706,36 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   // The send lifecycle (new → input → send → response) is shared by plain
   // prompts, "!" shell commands and "/" slash commands — see performTurn.
+  // Magi turns are always async background jobs, so all three take the same
+  // non-blocking path (OpenCode held the shell/command POST open for the whole
+  // turn; Magi returns a jobId immediately and streams over the audit SSE).
   sendPrompt: (text) =>
     performTurn(set, get, text, (sid) => withRetry(() => client!.sendPrompt(sid, text)), false),
 
-  // No retry for shell/command: re-POSTing would run the command twice.
-  runShell: (command) => {
-    const agent = get().agents.find((a) => a.mode === "primary")?.name ?? "build";
-    return performTurn(
+  // Magi has no direct shell route: ask the agent to run the command.
+  runShell: (command) =>
+    performTurn(
       set,
       get,
       `! ${command}`,
-      (sid) => client!.runShell(sid, command, agent),
-      true,
-      true,
-    );
-  },
+      (sid) =>
+        withRetry(() =>
+          client!.sendPrompt(
+            sid,
+            `Run this shell command and report its output:\n\n\`\`\`bash\n${command}\n\`\`\``,
+          ),
+        ),
+      false,
+    ),
 
+  // Magi has no slash-command route: send it verbatim for the agent to resolve.
   runCommand: (name, args) =>
     performTurn(
       set,
       get,
       args ? `/${name} ${args}` : `/${name}`,
-      (sid) => client!.runCommand(sid, name, args),
-      true,
+      (sid) => withRetry(() => client!.sendPrompt(sid, args ? `/${name} ${args}` : `/${name}`)),
+      false,
     ),
 
   deleteSession: async (id) => {
@@ -789,9 +780,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set((s) => ({ currentId: id, threads: { ...s.threads, [id]: { ...emptyThread(), loaded: true } } }));
       await get().refreshSessions();
       const prompt =
-        "Install the following as an OpenCode skill for this project. Use the " +
-        "customize-opencode skill. If it is a URL, fetch it; if it is Markdown, save it as " +
-        "a skill file under .opencode/skills/<name>/SKILL.md. Then reply with the installed skill's name.\n\n---\n" +
+        "Install the following as a skill for this project. If it is a URL, fetch it; " +
+        "if it is Markdown, save it as a skill file under skills/<name>/SKILL.md. " +
+        "Then reply with the installed skill's name.\n\n---\n" +
         text;
       set((s) => {
         const cur = s.threads[id];
@@ -837,7 +828,7 @@ export function tidyToolTitle(title: string): string {
 
 export function foldEvent(
   state: FoldState,
-  event: OpenCodeEvent,
+  event: RuntimeEvent,
   opts?: { shellTurn?: boolean },
 ): FoldState {
   const blocks = [...state.blocks];
@@ -923,92 +914,39 @@ function mapToolStatus(status?: string): ToolCallStatus {
   }
 }
 
-/** Convert loaded message history into thread blocks. */
-export function historyToThread(messages: HistoryMessage[], commands?: CommandInfo[]): FoldState {
+/** Convert loaded Magi history into thread blocks. Magi persists a flat
+ *  role/content transcript; `getMessages` folds `tool` rows into the preceding
+ *  assistant message as tool parts carrying only a name, status and output
+ *  (no input/title/args, and no synthetic shell markers or slash-command
+ *  template expansions — those were OpenCode-isms). */
+export function historyToThread(messages: HistoryMessage[]): FoldState {
   const blocks: ThreadBlock[] = [];
-  // OpenCode stores a slash command's EXPANDED template as the user message,
-  // with any typed arguments appended after it (no marker) — show the
-  // "/name args" the user actually typed instead. Longest template first, so
-  // one template being a prefix of another's expansion can't mis-attribute.
-  const templates = (commands ?? [])
-    .filter((c) => c.template?.trim())
-    .map((c) => ({ name: c.name, template: c.template!.trim() }))
-    .sort((a, b) => b.template.length - a.template.length);
-  const asTypedCommand = (text: string): string | undefined => {
-    const hit = templates.find((t) => text.startsWith(t.template));
-    if (!hit) return undefined;
-    const args = text.slice(hit.template.length).trim();
-    return args ? `/${hit.name} ${args}` : `/${hit.name}`;
-  };
-  // A step frozen mid-run (the runtime restarted or the turn was killed before
-  // it finished) must not spin forever in history — render it quietly and say
-  // once, at the end, that the turn was interrupted.
-  let interrupted = false;
-  // A user-typed "!" command is recorded as a synthetic user text plus a bash
-  // tool part on the next assistant message. Render it like the live path:
-  // the "! cmd" echo and the output inline — never the synthetic marker text.
-  let shellTurn = false;
   for (const m of messages) {
     if (m.role === "user") {
-      shellTurn = m.parts.some((p) => p.type === "text" && p.synthetic);
-      if (shellTurn) continue;
       const text = m.parts
         .filter((p) => p.type === "text")
         .map((p) => p.text ?? "")
         .join("")
         .trim();
-      const command = asTypedCommand(text);
-      if (command) blocks.push({ kind: "user", text: command });
-      else if (text) blocks.push({ kind: "user", text });
+      if (text) blocks.push({ kind: "user", text });
     } else {
       for (const p of m.parts) {
         if (p.type === "text" && p.text?.trim()) {
           const { clean, review } = splitReview(p.text);
           if (clean) blocks.push({ kind: "agent", markdown: clean });
           if (review) blocks.push(review);
-        }
-        else if (p.type === "tool") {
+        } else if (p.type === "tool") {
           // Interactive tools are surfaced by InteractionPrompt, not the thread;
           // `todo*` tools are opaque "N todos" noise — skip both.
           if (/question|permission|^ask$|todo/i.test(p.tool ?? "")) continue;
-          const status = mapToolStatus(p.state?.status);
-          const frozen = status === "running" || status === "pending";
-          if (frozen) interrupted = true;
-          const command =
-            typeof p.state?.input?.command === "string" ? p.state.input.command : "";
-          const filePath =
-            typeof p.state?.input?.filePath === "string" ? p.state.input.filePath : "";
-          const userShell = shellTurn && p.tool === "bash";
-          if (userShell) blocks.push({ kind: "user", text: `! ${command}` });
           blocks.push({
             kind: "tool-call",
-            title: tidyToolTitle(p.state?.title?.trim() || command || filePath || p.tool || "tool"),
-            status: frozen ? "pending" : status,
-            ...(userShell && p.state?.output?.trim()
-              ? { outputSummary: p.state.output.replace(/\s+$/, "") }
-              : {}),
+            title: tidyToolTitle(p.tool || "tool"),
+            status: mapToolStatus(p.state?.status),
           });
-          const artifact = deriveArtifact({
-            type: "tool.updated",
-            sessionId: "",
-            callId: "",
-            tool: p.tool ?? "",
-            status,
-            input: p.state?.input,
-            output: p.state?.output,
-          });
-          if (artifact) blocks.push(artifact);
         }
       }
-      shellTurn = false;
     }
-  }
-  if (interrupted) {
-    blocks.push({
-      kind: "status-line",
-      text: "Interrupted — this turn did not finish. Send a new message to continue.",
-      tone: "error",
-    });
   }
   return { blocks, index: {} };
 }
