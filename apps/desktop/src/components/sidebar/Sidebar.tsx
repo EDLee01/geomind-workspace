@@ -56,7 +56,7 @@ export function Sidebar({ project }: { project: Project }) {
         <div className="flex items-baseline gap-1.5">
           <img src={logo} alt="" className="h-[18px] w-auto self-center" />
           <div className="font-serif text-[17px] font-semibold leading-none tracking-tight text-text">
-            Open Science
+            GeoMind
           </div>
           <span className="text-[10px] uppercase tracking-widest text-muted">Beta</span>
         </div>
