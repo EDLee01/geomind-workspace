@@ -7,7 +7,7 @@ mod hpc;
 mod jupyter;
 mod kernel;
 mod modal;
-mod opencode_config;
+mod magi_config;
 mod preview_server;
 mod provenance;
 mod runtime;

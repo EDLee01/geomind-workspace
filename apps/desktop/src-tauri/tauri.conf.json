@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/opencode", "binaries/uv"],
+    "externalBin": ["binaries/magi", "binaries/uv"],
     "resources": {
       "../../../runtime/skills/external/ai4s-skills": "skills/",
       "../../../runtime/skills/core": "skills-core/",

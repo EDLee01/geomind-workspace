@@ -1,6 +1,12 @@
-// Manages the bundled OpenCode sidecar so it never interferes with any OpenCode
-// the user already has: it runs the *bundled* binary, on a *dedicated free port*,
-// with an *app-private* XDG config/data dir, and is killed on app exit.
+// Manages the bundled Magi daemon so it never interferes with any Magi the user
+// already has: it runs the *bundled* `magi` CLI, on a *dedicated free port*,
+// with an *app-private* MAGI_CONFIG_DIR (its own ~/.magi-next equivalent), and
+// is killed on app exit. The frontend's MagiClient pairs over loopback and
+// reads the audit SSE stream; this module only owns the process + config.yaml.
+//
+// NOTE: part of the OpenCode→Magi runtime migration, NOT compiled in this
+// environment (Tauri Linux build deps — webkit2gtk — are absent). It is a
+// faithful translation; build + `cargo test` before shipping.
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -8,7 +14,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
-use crate::opencode_config::merge_config;
+use crate::magi_config::{merge_provider, ProviderSpec};
 
 #[derive(Default)]
 pub struct RuntimeState {
@@ -26,8 +32,11 @@ fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
         .join("runtime"))
 }
 
-fn xdg_config_home(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(runtime_root(app)?.join("xdg-config"))
+/// App-private Magi state root ($MAGI_CONFIG_DIR). Holds config.yaml, the
+/// session sqlite, skills, devices and the daemon pairing credentials — the
+/// exact layout Magi expects under ~/.magi-next.
+fn magi_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(runtime_root(app)?.join("magi"))
 }
 
 /// File recording the user's chosen active workspace folder (absolute path).
@@ -96,63 +105,28 @@ pub fn base_workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Path OpenCode reads when XDG_CONFIG_HOME points at our private dir.
-fn opencode_config_file(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(xdg_config_home(app)?.join("opencode").join("opencode.json"))
+/// Magi's config file inside the app-private state root ($MAGI_CONFIG_DIR/config.yaml).
+fn magi_config_file(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(magi_config_dir(app)?.join("config.yaml"))
 }
 
-/// The user's existing OpenCode auth file (their login / free credits), if any.
-/// Read-only: we copy it into our sandbox so the bundled runtime can use the same
-/// login, but we never modify the user's file or sessions.
-fn user_auth_source() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            candidates.push(PathBuf::from(xdg).join("opencode").join("auth.json"));
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(PathBuf::from(&home).join(".local/share/opencode/auth.json"));
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        candidates.push(PathBuf::from(appdata).join("opencode").join("auth.json"));
-    }
-    candidates.into_iter().find(|p| p.exists())
-}
-
-/// Copy the user's OpenCode CLI login into the app-private data dir, EXPLICITLY
-/// (from the Settings page) — never silently. Returns false when there is no
-/// CLI login to import. Restarts the sidecar so it picks the credentials up.
+/// Kept for command-surface compatibility with the frontend bridge. Magi has no
+/// CLI-login file to import — providers live in config.yaml and API keys come
+/// from the daemon's process environment — so this is an honest no-op.
 #[tauri::command]
-pub fn import_opencode_login(app: AppHandle, state: State<'_, RuntimeState>) -> Result<bool, String> {
-    let Some(src) = user_auth_source() else {
-        return Ok(false);
-    };
-    let dst = runtime_root(&app)?.join("xdg-data").join("opencode").join("auth.json");
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::copy(&src, &dst).map_err(|e| format!("copy failed: {e}"))?;
-
-    // Restart the running sidecar so /config/providers reflects the login.
-    if state.url.lock().unwrap().is_some() {
-        kill_child(&state);
-        let port = { *state.port.lock().unwrap().get_or_insert_with(free_port) };
-        let child = spawn_sidecar(&app, port)?;
-        *state.child.lock().unwrap() = Some(child);
-    }
-    Ok(true)
+pub fn import_opencode_login(_app: AppHandle, _state: State<'_, RuntimeState>) -> Result<bool, String> {
+    Ok(false)
 }
 
-/// Deploy the bundled skill packs (Tauri resources) into the app-private
-/// profile's global skills dir (`<xdg-config>/opencode/skills/`), which OpenCode
-/// scans regardless of project detection: `skills/` is the external ai4s-skills
-/// pack, `skills-core/` the first-party skills from `runtime/skills/core`. The
-/// workspace's own `.opencode/skills/` stays reserved for skills the user
-/// installs. Runs before every sidecar start so app upgrades refresh the packs.
+/// Deploy the bundled skill packs (Tauri resources) into the app-private Magi
+/// profile's skills dir (`$MAGI_CONFIG_DIR/skills/`), which Magi scans for
+/// installed skills: `skills/` is the external ai4s-skills pack, `skills-core/`
+/// the first-party skills from `runtime/skills/core`. Runs before every daemon
+/// start so app upgrades refresh the packs.
 fn deploy_bundled_skills(app: &AppHandle) {
-    let dst = match xdg_config_home(app) {
-        Ok(cfg) => cfg.join("opencode").join("skills"),
+    // Magi scans $MAGI_CONFIG_DIR/skills for <name>/SKILL.md (see paths.ts).
+    let dst = match magi_config_dir(app) {
+        Ok(cfg) => cfg.join("skills"),
         Err(_) => return,
     };
     for resource in ["skills", "skills-core"] {
@@ -241,47 +215,42 @@ pub(crate) fn free_port() -> u16 {
 }
 
 fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
-    let root = runtime_root(app)?;
-    let cfg = root.join("xdg-config");
-    let data = root.join("xdg-data");
-    let cache = root.join("xdg-cache");
-    let state = root.join("xdg-state");
-    // Run OpenCode inside the user-facing workspace, NOT the app's cwd (which is `/`
-    // when launched from Finder) — otherwise it scans the whole filesystem root.
+    let cfg = magi_config_dir(app)?;
+    // Run the daemon inside the user-facing workspace, NOT the app's cwd (which
+    // is `/` when launched from Finder) — control jobs default to the daemon's
+    // cwd, and `control.defaultCwd` is set to this so dated subfolders validate.
     let workspace = workspace_dir(app)?;
-    for d in [&cfg, &data, &cache, &state] {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    // Ship the bundled scientific skills into the app-private OpenCode profile.
+    std::fs::create_dir_all(&cfg).map_err(|e| e.to_string())?;
+    // Ship the bundled scientific skills into the app-private Magi profile.
     deploy_bundled_skills(app);
     let home = std::env::var("HOME").unwrap_or_default();
     let port_str = port.to_string();
 
+    // `magi serve` daemonizes when MAGI_DAEMON=1 (it self-mints a long-lived
+    // pairing token into $MAGI_CONFIG_DIR/state/daemon/control-credentials.json);
+    // MagiClient also pairs itself over loopback, so either path authenticates.
     let cmd = app
         .shell()
-        .sidecar("opencode")
+        .sidecar("magi")
         .map_err(|e| format!("sidecar not found: {e}"))?
-        .args([
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            port_str.as_str(),
-            "--cors",
-            "*",
-        ])
-        // App-private dirs: OpenCode never touches the user's ~/.config/opencode.
-        .env("XDG_CONFIG_HOME", cfg.to_string_lossy().to_string())
-        .env("XDG_DATA_HOME", data.to_string_lossy().to_string())
-        .env("XDG_CACHE_HOME", cache.to_string_lossy().to_string())
-        .env("XDG_STATE_HOME", state.to_string_lossy().to_string())
+        .args(["serve"])
+        // App-private state root: the daemon never touches the user's ~/.magi-next.
+        .env("MAGI_CONFIG_DIR", cfg.to_string_lossy().to_string())
+        .env("MAGI_CONTROL_BIND", "127.0.0.1")
+        .env("MAGI_CONTROL_PORT", port_str.as_str())
+        .env("MAGI_DAEMON", "1")
+        // No LAN discovery for a local desktop daemon.
+        .env("MAGI_DISABLE_MDNS", "1")
+        // Give the user time to answer an approval/question before it times out
+        // (Magi's default is 300 s; a research turn may pause much longer).
+        .env("MAGI_INTERACTION_TIMEOUT_MS", "1800000")
         .env("HOME", home)
         .current_dir(workspace);
     // GUI-launched apps get a minimal PATH; give the agent the user's real tools.
     #[cfg(unix)]
     let cmd = cmd.env("PATH", enriched_path());
 
-    let (mut rx, child) = cmd.spawn().map_err(|e| format!("failed to spawn opencode: {e}"))?;
+    let (mut rx, child) = cmd.spawn().map_err(|e| format!("failed to spawn magi: {e}"))?;
     // Drain events so the child's stdout/stderr buffer never blocks it.
     tauri::async_runtime::spawn(async move { while rx.recv().await.is_some() {} });
     Ok(child)
@@ -416,22 +385,8 @@ pub fn kill_child(state: &RuntimeState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_key_from_config, sync_skill_pack};
+    use super::sync_skill_pack;
     use std::fs;
-
-    #[test]
-    fn removes_only_the_named_config_entry() {
-        let cfg = r#"{"model":"a/b","provider":{"ollama":{"npm":"x"},"keep":{"npm":"y"}},"mcp":{"pw":{"type":"local"}}}"#;
-        let out = remove_key_from_config(cfg, "provider", "ollama").unwrap();
-        assert!(!out.contains("ollama"));
-        assert!(out.contains("keep"));
-        assert!(out.contains("\"model\": \"a/b\""));
-        let out2 = remove_key_from_config(cfg, "mcp", "pw").unwrap();
-        assert!(!out2.contains("\"pw\""));
-        // Absent key and non-JSON input are errors, not silent no-ops.
-        assert!(remove_key_from_config(cfg, "provider", "missing").is_err());
-        assert!(remove_key_from_config("// jsonc comment\n{}", "provider", "x").is_err());
-    }
 
     fn write(path: &std::path::Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -491,57 +446,27 @@ mod tests {
     }
 }
 
-/// Remove an entry from a map section of the app-private global OpenCode
-/// config ("provider" or "mcp") and restart the sidecar (PATCH /global/config
-/// cannot delete keys).
+/// Removing a provider/MCP entry means editing config.yaml. Magi's YAML is
+/// hand-authored (comments, anchors, ordering the user cares about), so v0.1
+/// does not rewrite it programmatically — the user edits config.yaml and
+/// reconnects. Kept for command-surface compatibility; returns a clear error.
 #[tauri::command]
 pub fn remove_config_entry(
-    app: AppHandle,
-    state: State<'_, RuntimeState>,
+    _app: AppHandle,
+    _state: State<'_, RuntimeState>,
     section: String,
     key: String,
 ) -> Result<(), String> {
-    if !matches!(section.as_str(), "provider" | "mcp") {
-        return Err(format!("section \"{section}\" is not removable"));
-    }
-    let dir = xdg_config_home(&app)?.join("opencode");
-    // The server writes opencode.jsonc; older configs may be opencode.json.
-    let path = ["opencode.jsonc", "opencode.json"]
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.exists())
-        .ok_or("no global OpenCode config found")?;
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let out = remove_key_from_config(&text, &section, &key)?;
-    std::fs::write(&path, out).map_err(|e| e.to_string())?;
-
-    if state.url.lock().unwrap().is_some() {
-        kill_child(&state);
-        let port = { *state.port.lock().unwrap().get_or_insert_with(free_port) };
-        let child = spawn_sidecar(&app, port)?;
-        *state.child.lock().unwrap() = Some(child);
-    }
-    Ok(())
+    Err(format!(
+        "Editing config.yaml is manual in this version — remove {section}.{key} in $MAGI_CONFIG_DIR/config.yaml and reconnect."
+    ))
 }
 
-/// Drop `key` from the config JSON's `section` map, erroring when the config
-/// is not plain JSON or the key is absent.
-fn remove_key_from_config(text: &str, section: &str, key: &str) -> Result<String, String> {
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("config is not plain JSON: {e}"))?;
-    let removed = cfg
-        .get_mut(section)
-        .and_then(|p| p.as_object_mut())
-        .map(|p| p.remove(key).is_some())
-        .unwrap_or(false);
-    if !removed {
-        return Err(format!("\"{key}\" is not in the config's {section} section"));
-    }
-    serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
-}
-
-/// Write the provider key/model into the app-private OpenCode config and restart
-/// the sidecar so it picks them up. Returns the same base URL (stable port).
+/// Write a provider block + `main` alias into the app-private config.yaml and
+/// restart the daemon so it reloads. The API KEY is never written to the file
+/// (Magi reads it from the daemon's environment via `apiKeyEnv`); the desktop
+/// shell is responsible for putting the key in the spawn env from the OS
+/// keychain — see the safety guardrails. Returns the base URL (stable port).
 #[tauri::command]
 pub fn configure_opencode(
     app: AppHandle,
@@ -551,15 +476,33 @@ pub fn configure_opencode(
     model: String,
     base_url: Option<String>,
 ) -> Result<String, String> {
-    let path = opencode_config_file(&app)?;
+    let _ = api_key; // never persisted to config.yaml (keychain → spawn env, future)
+    let base = base_url.unwrap_or_default();
+    // Anthropic-shaped endpoints speak the messages format; everything else is
+    // treated as OpenAI-chat compatible (the common case for local/hosted).
+    let format = if provider == "anthropic" {
+        "anthropic-messages"
+    } else {
+        "openai-chat"
+    };
+    let env_name = format!("{}_API_KEY", provider.to_uppercase());
+    let spec = ProviderSpec {
+        name: &provider,
+        kind: "messages-compatible",
+        format,
+        base_url: &base,
+        default_model: &model,
+        api_key_env: &env_name,
+    };
+    let path = magi_config_file(&app)?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let merged = merge_config(&existing, &provider, &api_key, &model, base_url.as_deref())?;
+    let merged = merge_provider(&existing, &spec, !model.is_empty());
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(&path, merged).map_err(|e| e.to_string())?;
 
-    // Restart so the running server reloads the new provider config.
+    // Restart so the running daemon reloads the new provider config.
     let was_running = state.url.lock().unwrap().is_some();
     if was_running {
         kill_child(&state);
