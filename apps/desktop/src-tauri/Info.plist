@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The desktop app talks to a bundled Magi daemon over cleartext HTTP on
+	  loopback (http://127.0.0.1:<port>). macOS App Transport Security blocks
+	  cleartext HTTP from the WKWebView by default, which surfaced as
+	  "Load failed" on the /pairing request and cascaded into 401
+	  {"error":"unauthorized"} on every subsequent Control API call.
+	  NSAllowsLocalNetworking whitelists loopback/link-local/.local without
+	  disabling ATS globally.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
